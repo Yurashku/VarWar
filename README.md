@@ -6,7 +6,7 @@
 **CUPED** (Controlled Experiments Using Pre-Experiment Data) — линейная корректировка целевой метрики с использованием заранее известной ковариаты (pre-period метрики). 
 
 $$
-	ilde Y = Y - \theta (X - \mathbb E[X]), \qquad \theta = \frac{\operatorname{Cov}(Y,X)}{\operatorname{Var}(X)}
+		ilde Y = Y - \theta (X - \mathbb E[X]), \qquad \theta = \frac{\operatorname{Cov}(Y,X)}{\operatorname{Var}(X)}
 $$
 
 После корректировки дисперсия снижается до
@@ -22,7 +22,7 @@ $$
 	ilde Y = Y - \beta^\top (X - \mathbb E[X]), \qquad \beta^{*} = \Sigma_{XX}^{-1} \Sigma_{XY}
 $$
 
-и
+и 
 $$
 \operatorname{Var}(\tilde Y) = \operatorname{Var}(Y) - \Sigma_{YX}\Sigma_{XX}^{-1}\Sigma_{XY} = (1-R^2)\operatorname{Var}(Y),
 $$
