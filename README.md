@@ -23,25 +23,25 @@
 **CUPED** (Controlled Experiments Using Pre-Experiment Data) — линейная корректировка целевой метрики с использованием заранее известной ковариаты (pre-period метрики). 
 
 $$
-	ilde Y = Y - \theta (X - \mathbb E[X]), \qquad \theta = \frac{\operatorname{Cov}(Y,X)}{\operatorname{Var}(X)}
+\tilde{Y} = Y - \theta (X - \mathbb{E}[X]), \qquad \theta = \frac{\text{Cov}(Y,X)}{\text{Var}(X)}
 $$
 
 После корректировки дисперсия снижается до
 
 $$
-\operatorname{Var}(\tilde Y) = (1-\rho_{Y,X}^2)\operatorname{Var}(Y),
+\text{Var}(\tilde{Y}) = (1-\rho_{Y,X}^2)\text{Var}(Y),
 $$
 где $\rho_{Y,X}$ — коэффициент корреляции. Максимальное относительное снижение дисперсии равно $\rho_{Y,X}^2$.
 
 **CUPAC** (обобщение) — ML-подход, строящий оптимальную линейную комбинацию множества ковариат (лаги, агрегаты, производные признаки) через регрессию/модель предсказания. Пусть $X \in \mathbb R^p$ — вектор pre-treatment признаков. Тогда линейный оптимум:
 
 $$
-	ilde Y = Y - \beta^\top (X - \mathbb E[X]), \qquad \beta^{*} = \Sigma_{XX}^{-1} \Sigma_{XY}
+\tilde{Y} = Y - \beta^\top (X - \mathbb{E}[X]), \qquad \beta^{*} = \Sigma_{XX}^{-1} \Sigma_{XY}
 $$
 
 и
 $$
-\operatorname{Var}(\tilde Y) = \operatorname{Var}(Y) - \Sigma_{YX}\Sigma_{XX}^{-1}\Sigma_{XY} = (1-R^2)\operatorname{Var}(Y),
+\text{Var}(\tilde{Y}) = \text{Var}(Y) - \Sigma_{YX}\Sigma_{XX}^{-1}\Sigma_{XY} = (1-R^2)\text{Var}(Y),
 $$
 где $R^2$ — коэффициент детерминации регрессии $Y$ на $X$. Следовательно Var.Red.% $= 100\cdot R^2$ (при корректной оценке и отсутствии переобучения). В ML-варианте вместо явной формулы для $\beta$ берётся прогноз $\hat Y = f(X)$ из выбранной модели, и используется остаток $R = Y - \hat Y$.
 
