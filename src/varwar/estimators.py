@@ -70,6 +70,55 @@ def _build_result(
     )
 
 
+def _feature_matrix(data: pd.DataFrame, features: tuple[str, ...]) -> np.ndarray:
+    return np.column_stack([_float_column(data, col) for col in features])
+
+
+def _cross_fitted_ridge_predictions(
+    x: np.ndarray,
+    y: np.ndarray,
+    n_splits: int,
+    ridge: float,
+    seed: int,
+) -> np.ndarray:
+    if n_splits < 2:
+        raise ValueError("n_splits must be at least 2.")
+    rng = np.random.default_rng(seed)
+    indices = rng.permutation(x.shape[0])
+    folds = np.array_split(indices, min(n_splits, x.shape[0]))
+    predictions = np.empty(x.shape[0], dtype=float)
+    all_indices = np.arange(x.shape[0])
+    for fold in folds:
+        train_mask = np.ones(x.shape[0], dtype=bool)
+        train_mask[fold] = False
+        train_idx = all_indices[train_mask]
+        predictions[fold] = _ridge_predict(
+            x[train_idx],
+            y[train_idx],
+            x[fold],
+            ridge,
+        )
+    return predictions
+
+
+def _ridge_predict(
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    x_predict: np.ndarray,
+    ridge: float,
+) -> np.ndarray:
+    x_mean = x_train.mean(axis=0)
+    x_std = x_train.std(axis=0, ddof=0)
+    x_std = np.where(x_std > 0.0, x_std, 1.0)
+    x_centered = (x_train - x_mean) / x_std
+    y_mean = float(y_train.mean())
+    y_centered = y_train - y_mean
+    xtx = x_centered.T @ x_centered
+    penalty = max(float(ridge), 0.0) * np.eye(xtx.shape[0], dtype=float)
+    coef = np.linalg.solve(xtx + penalty, x_centered.T @ y_centered)
+    return y_mean + ((x_predict - x_mean) / x_std) @ coef
+
+
 @dataclass
 class DifferenceInMeansEstimator:
     """Closed-form A/B estimator optimized for the common two-arm case."""
@@ -158,6 +207,90 @@ class RegressionAdjustmentEstimator:
             n_treatment,
             spec.alpha,
             {"features": ",".join(features), "se": "HC1"},
+        )
+
+
+@dataclass
+class MLRateEstimator:
+    """Cross-fitted machine-learning regression adjustment.
+
+    The nuisance model is a ridge predictor over numeric covariates. The final
+    stage regresses the target on treatment, out-of-fold prediction, and the
+    treatment-by-prediction interaction with HC1 inference.
+    """
+
+    name: str = "ml_rate"
+    n_splits: int = 5
+    ridge: float = 1e-6
+    seed: int = 20260710
+    include_interaction: bool = True
+
+    def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
+        features = tuple(spec.pre_treatment_features())
+        require_columns(data, [spec.treatment_col, spec.target_col, *features])
+        if not features:
+            raise ValueError("MLRateEstimator requires numeric pre-treatment features.")
+
+        y = _float_column(data, spec.target_col)
+        treatment_raw = np.asarray(data[spec.treatment_col])
+        treatment = (treatment_raw == spec.treatment_value).astype(float)
+        x = _feature_matrix(data, features)
+        valid = (
+            np.isfinite(y)
+            & np.isfinite(x).all(axis=1)
+            & (
+                (treatment_raw == spec.control_value)
+                | (treatment_raw == spec.treatment_value)
+            )
+        )
+        y_valid = y[valid]
+        treatment_valid = treatment[valid]
+        x_valid = x[valid]
+        if y_valid.size <= max(self.n_splits, x_valid.shape[1] + 2):
+            raise ValueError("MLRateEstimator needs more rows for cross-fitting.")
+        predictions = _cross_fitted_ridge_predictions(
+            x_valid,
+            y_valid,
+            n_splits=self.n_splits,
+            ridge=self.ridge,
+            seed=self.seed,
+        )
+        centered_pred = predictions - float(predictions.mean())
+        columns = [
+            np.ones(y_valid.size, dtype=float),
+            treatment_valid,
+            centered_pred,
+        ]
+        if self.include_interaction:
+            columns.append(treatment_valid * centered_pred)
+        design = np.column_stack(columns)
+        beta, *_ = np.linalg.lstsq(design, y_valid, rcond=None)
+        residuals = y_valid - design @ beta
+        xtx_inv = np.linalg.pinv(design.T @ design)
+        meat = design.T @ ((residuals**2)[:, None] * design)
+        n, p = design.shape
+        hc1 = n / max(n - p, 1)
+        cov = hc1 * xtx_inv @ meat @ xtx_inv
+        effect = float(beta[1])
+        se = math.sqrt(max(float(cov[1, 1]), 0.0))
+        n_control = int((treatment_valid == 0.0).sum())
+        n_treatment = int((treatment_valid == 1.0).sum())
+        return _build_result(
+            self.name,
+            effect,
+            se,
+            float(n - p),
+            n_control,
+            n_treatment,
+            spec.alpha,
+            {
+                "features": ",".join(features),
+                "n_splits": self.n_splits,
+                "ridge": self.ridge,
+                "include_interaction": self.include_interaction,
+                "prediction_variance": float(predictions.var(ddof=1)),
+                "se": "HC1",
+            },
         )
 
 
@@ -343,6 +476,83 @@ class KSTestEstimator:
 
 
 @dataclass
+class ApproxKSTestEstimator:
+    """Fast histogram approximation of the two-sample KS statistic.
+
+    This is an explicit approximation for large synthetic sweeps. It avoids
+    sorting the full pooled sample and uses a fixed number of bins instead.
+    """
+
+    name: str = "approx_ks_fast"
+    n_bins: int = 2048
+
+    def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
+        control, treatment = _group_arrays(data, spec)
+        if control.size == 0 or treatment.size == 0:
+            raise ValueError("Both groups need finite observations.")
+        statistic = _approx_ks_statistic(control, treatment, self.n_bins)
+        p_value = _ks_asymptotic_pvalue(statistic, control.size, treatment.size)
+        return EstimateResult(
+            estimator=self.name,
+            effect=statistic,
+            standard_error=math.nan,
+            statistic=statistic,
+            p_value=p_value,
+            ci_low=math.nan,
+            ci_high=math.nan,
+            n_control=int(control.size),
+            n_treatment=int(treatment.size),
+            diagnostics={
+                "effect_definition": "histogram_approx_two_sample_ks",
+                "n_bins": self.n_bins,
+            },
+        )
+
+
+@dataclass
+class EnergyDistanceTestEstimator:
+    """One-dimensional energy two-sample test with permutation p-value."""
+
+    name: str = "energy_test"
+    n_resamples: int = 199
+    seed: int = 20260710
+
+    def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
+        control, treatment = _group_arrays(data, spec)
+        if control.size < 2 or treatment.size < 2:
+            raise ValueError("Both groups need at least two finite observations.")
+        statistic = _energy_distance(control, treatment)
+        pooled = np.concatenate([control, treatment])
+        n_control = int(control.size)
+        rng = np.random.default_rng(self.seed)
+        shuffled = pooled.copy()
+        permuted = np.empty(self.n_resamples, dtype=float)
+        extreme = 0
+        for i in range(self.n_resamples):
+            rng.shuffle(shuffled)
+            perm_stat = _energy_distance(shuffled[:n_control], shuffled[n_control:])
+            permuted[i] = perm_stat
+            extreme += perm_stat >= statistic
+        p_value = (extreme + 1.0) / (self.n_resamples + 1.0)
+        se = float(permuted.std(ddof=1)) if self.n_resamples > 1 else math.nan
+        return EstimateResult(
+            estimator=self.name,
+            effect=statistic,
+            standard_error=se,
+            statistic=safe_divide(statistic, se),
+            p_value=p_value,
+            ci_low=math.nan,
+            ci_high=math.nan,
+            n_control=n_control,
+            n_treatment=int(treatment.size),
+            diagnostics={
+                "effect_definition": "energy_distance_1d",
+                "n_resamples": self.n_resamples,
+            },
+        )
+
+
+@dataclass
 class RandomizedTTestEstimator:
     """Klartag-Sodin style randomized t-statistic used in the HSE notebook.
 
@@ -409,6 +619,21 @@ def _ks_statistic(control: np.ndarray, treatment: np.ndarray) -> float:
     return float(np.max(np.abs(cdf_t - cdf_c)))
 
 
+def _approx_ks_statistic(control: np.ndarray, treatment: np.ndarray, n_bins: int) -> float:
+    if n_bins < 8:
+        raise ValueError("n_bins must be at least 8.")
+    lower = float(min(control.min(), treatment.min()))
+    upper = float(max(control.max(), treatment.max()))
+    if lower == upper:
+        return 0.0
+    edges = np.linspace(lower, upper, num=n_bins + 1, dtype=float)
+    hist_c, _ = np.histogram(control, bins=edges)
+    hist_t, _ = np.histogram(treatment, bins=edges)
+    cdf_c = np.cumsum(hist_c, dtype=float) / control.size
+    cdf_t = np.cumsum(hist_t, dtype=float) / treatment.size
+    return float(np.max(np.abs(cdf_t - cdf_c)))
+
+
 def _ks_asymptotic_pvalue(statistic: float, n_control: int, n_treatment: int) -> float:
     if statistic < 0 or n_control <= 0 or n_treatment <= 0:
         return math.nan
@@ -416,6 +641,31 @@ def _ks_asymptotic_pvalue(statistic: float, n_control: int, n_treatment: int) ->
     lam = (math.sqrt(effective_n) + 0.12 + 0.11 / math.sqrt(effective_n)) * statistic
     terms = [(-1) ** (k - 1) * math.exp(-2.0 * k * k * lam * lam) for k in range(1, 101)]
     return float(min(max(2.0 * sum(terms), 0.0), 1.0))
+
+
+def _energy_distance(control: np.ndarray, treatment: np.ndarray) -> float:
+    try:
+        from scipy import stats as scipy_stats  # type: ignore
+
+        return float(scipy_stats.energy_distance(control, treatment))
+    except Exception:
+        cross = _mean_abs_cross(control, treatment)
+        within_c = _mean_abs_cross(control, control)
+        within_t = _mean_abs_cross(treatment, treatment)
+        return math.sqrt(max(2.0 * cross - within_c - within_t, 0.0))
+
+
+def _mean_abs_cross(left: np.ndarray, right: np.ndarray) -> float:
+    right_sorted = np.sort(right)
+    prefix = np.concatenate([[0.0], np.cumsum(right_sorted, dtype=float)])
+    positions = np.searchsorted(right_sorted, left, side="right")
+    sum_le = prefix[positions]
+    count_le = positions.astype(float)
+    total = prefix[-1]
+    count_right = float(right_sorted.size)
+    distances = left * count_le - sum_le
+    distances += (total - sum_le) - left * (count_right - count_le)
+    return float(distances.sum() / (left.size * right_sorted.size))
 
 
 @dataclass
@@ -539,6 +789,28 @@ def _winsorize_values(values: np.ndarray, lower: float, upper: float) -> np.ndar
         raise ValueError("Winsorization quantiles must satisfy 0 <= lower < upper <= 1.")
     lo, hi = np.quantile(values, [lower, upper])
     return np.clip(values, lo, hi)
+
+
+def _nearest_neighbor_indices(
+    query: np.ndarray,
+    reference: np.ndarray,
+    chunk_size: int,
+) -> np.ndarray:
+    try:
+        from scipy.spatial import cKDTree  # type: ignore
+
+        _, indices = cKDTree(reference).query(query, k=1, workers=1)
+        return np.asarray(indices, dtype=int)
+    except Exception:
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive.")
+        result = np.empty(query.shape[0], dtype=int)
+        for start in range(0, query.shape[0], chunk_size):
+            stop = min(start + chunk_size, query.shape[0])
+            chunk = query[start:stop]
+            distances = ((chunk[:, None, :] - reference[None, :, :]) ** 2).sum(axis=2)
+            result[start:stop] = np.argmin(distances, axis=1)
+        return result
 
 
 @dataclass
@@ -694,6 +966,60 @@ class VarianceWeightedStratifiedEstimator:
             n_treatment,
             spec.alpha,
             {"strata_used": len(effects), "strata_skipped": skipped},
+        )
+
+
+@dataclass
+class NearestNeighborMatchingEstimator:
+    """Covariate nearest-neighbor ATT estimator for baseline comparison."""
+
+    name: str = "nearest_neighbor_matching"
+    chunk_size: int = 1024
+
+    def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
+        features = tuple(spec.pre_treatment_features())
+        require_columns(data, [spec.treatment_col, spec.target_col, *features])
+        if not features:
+            raise ValueError("Nearest-neighbor matching requires numeric covariates.")
+        y = _float_column(data, spec.target_col)
+        treatment = np.asarray(data[spec.treatment_col])
+        x = _feature_matrix(data, features)
+        valid = np.isfinite(y) & np.isfinite(x).all(axis=1)
+        control_mask = valid & (treatment == spec.control_value)
+        treatment_mask = valid & (treatment == spec.treatment_value)
+        if control_mask.sum() < 2 or treatment_mask.sum() < 2:
+            raise ValueError("Both groups need at least two matched observations.")
+        x_control = x[control_mask]
+        x_treatment = x[treatment_mask]
+        y_control = y[control_mask]
+        y_treatment = y[treatment_mask]
+        pooled = np.vstack([x_control, x_treatment])
+        center = pooled.mean(axis=0)
+        scale = pooled.std(axis=0, ddof=0)
+        scale = np.where(scale > 0.0, scale, 1.0)
+        x_control = (x_control - center) / scale
+        x_treatment = (x_treatment - center) / scale
+        match_index = _nearest_neighbor_indices(x_treatment, x_control, self.chunk_size)
+        matched_y = y_control[match_index]
+        diffs = y_treatment - matched_y
+        n_pairs = int(diffs.size)
+        effect = float(diffs.mean())
+        se = float(diffs.std(ddof=1) / math.sqrt(n_pairs))
+        diagnostics = {
+            "estimand": "ATT",
+            "features": ",".join(features),
+            "matched_pairs": n_pairs,
+            "unique_controls": int(np.unique(match_index).size),
+        }
+        return _build_result(
+            self.name,
+            effect,
+            se,
+            float(max(n_pairs - 1, 1)),
+            int(control_mask.sum()),
+            int(treatment_mask.sum()),
+            spec.alpha,
+            diagnostics,
         )
 
 

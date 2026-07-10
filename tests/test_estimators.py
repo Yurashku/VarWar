@@ -12,11 +12,16 @@ import numpy as np
 import pandas as pd
 
 from varwar.benchmark import build_default_race, run_estimator_race
-from varwar.corrections import bonferroni, holm_bonferroni
+from varwar.corrections import bonferroni, holm_bonferroni, romano_wolf_stepdown
 from varwar.core import ExperimentSpec, WrappedEstimator
 from varwar.estimators import (
+    ApproxKSTestEstimator,
     DifferenceInMeansEstimator,
+    EnergyDistanceTestEstimator,
     HypExABTestEstimator,
+    KSTestEstimator,
+    MLRateEstimator,
+    NearestNeighborMatchingEstimator,
     PlaceholderEstimator,
     RandomizedTTestEstimator,
     RatioDeltaMethodEstimator,
@@ -93,8 +98,12 @@ class EstimatorTests(unittest.TestCase):
     def test_default_race_contains_sheet_v02_methods(self) -> None:
         names = {estimator.name for estimator in build_default_race()}
         self.assertIn("ks_test", names)
+        self.assertIn("approx_ks_fast", names)
+        self.assertIn("energy_test", names)
         self.assertIn("randomized_t_test", names)
         self.assertIn("regression_adjustment", names)
+        self.assertIn("ml_rate", names)
+        self.assertIn("nearest_neighbor_matching", names)
         self.assertIn("trimmed_mean_diff", names)
         self.assertIn("winsorized_mean_diff", names)
         self.assertIn("variance_weighted_stratified", names)
@@ -135,6 +144,32 @@ class EstimatorTests(unittest.TestCase):
         self.assertTrue(math.isfinite(result.statistic))
         self.assertTrue(0.0 <= result.p_value <= 1.0)
 
+    def test_approx_ks_tracks_exact_ks_on_synthetic_data(self) -> None:
+        data = generate_synthetic_ab(SyntheticConfig(n=1000, effect=0.15, seed=17))
+        exact = KSTestEstimator().estimate(data, ExperimentSpec())
+        approx = ApproxKSTestEstimator(n_bins=256).estimate(data, ExperimentSpec())
+        self.assertLess(abs(exact.effect - approx.effect), 0.03)
+        self.assertTrue(0.0 <= approx.p_value <= 1.0)
+
+    def test_energy_test_is_finite(self) -> None:
+        data = generate_synthetic_ab(SyntheticConfig(n=500, effect=0.30, seed=19))
+        result = EnergyDistanceTestEstimator(n_resamples=29).estimate(data, ExperimentSpec())
+        self.assertTrue(math.isfinite(result.effect))
+        self.assertTrue(0.0 <= result.p_value <= 1.0)
+
+    def test_ml_rate_and_matching_are_finite(self) -> None:
+        data = generate_synthetic_ab(SyntheticConfig(n=1200, effect=0.20, seed=23))
+        spec = ExperimentSpec(
+            covariate_cols=("y_pre", "x1", "x2"),
+            pre_treatment_cols=("y_pre", "x1", "x2"),
+        )
+        ml_rate = MLRateEstimator(n_splits=3).estimate(data, spec)
+        matching = NearestNeighborMatchingEstimator().estimate(data, spec)
+        self.assertTrue(math.isfinite(ml_rate.effect))
+        self.assertTrue(math.isfinite(ml_rate.standard_error))
+        self.assertTrue(math.isfinite(matching.effect))
+        self.assertTrue(math.isfinite(matching.standard_error))
+
     def test_hypex_backend_hook_can_delegate(self) -> None:
         def backend(data: pd.DataFrame, spec: ExperimentSpec):
             result = DifferenceInMeansEstimator().estimate(data, spec)
@@ -157,6 +192,17 @@ class EstimatorTests(unittest.TestCase):
         np.testing.assert_allclose(adjusted, [0.03, 0.60, 1.00])
         holm = holm_bonferroni([0.01, 0.04, 0.03])
         self.assertTrue(np.all(np.diff(np.sort(holm)) >= 0))
+        observed = np.array([3.0, 2.0, 1.0])
+        bootstrap = np.array(
+            [
+                [2.5, 1.5, 0.5],
+                [1.0, 2.5, 1.2],
+                [0.5, 0.7, 1.5],
+            ]
+        )
+        romano = romano_wolf_stepdown(observed, bootstrap)
+        self.assertEqual(romano.shape, observed.shape)
+        self.assertTrue(np.all((0.0 <= romano) & (romano <= 1.0)))
 
 
 if __name__ == "__main__":
