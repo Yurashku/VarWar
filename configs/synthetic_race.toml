@@ -1,0 +1,16 @@
+[synthetic]
+n = 5000
+effect = 0.25
+covariate_signal = 0.75
+noise_scale = 1.0
+seed = 42
+
+[race]
+include_optional = true
+measure_memory = false
+
+[features]
+pre_treatment = ["y_pre", "x1", "x2"]
+expert_safe_in_time = ["calendar_index", "market_index"]
+balance_gated_in_time = ["operational_load"]
+unsafe_demo = ["post_outcome_proxy"]
