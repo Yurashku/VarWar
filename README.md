@@ -15,14 +15,16 @@ benchmarks, composable estimators, and agent-facing instructions.
   `sklearn_cupac_A_plus_B+hypex_ab`, and
   `sklearn_cupac_A_plus_B_plus_C+hypex_ab`.
 - Native estimators/tests: Welch and pooled t-tests, KS test,
-  randomized/hedgehog t-test, permutation mean test, regression adjustment,
-  ratio delta method, stratified and variance-weighted summaries, robust
-  trimmed/winsorized summaries, and Wald/LATE.
-- Multiple-testing helpers: Bonferroni and Holm-Bonferroni.
+  fast approximate KS, energy-distance test, randomized/hedgehog t-test,
+  permutation mean test, regression adjustment, ML-rate-style cross-fitted
+  adjustment, nearest-neighbor matching, ratio delta method, stratified and
+  variance-weighted summaries, robust trimmed/winsorized summaries, and
+  Wald/LATE.
+- Multiple-testing helpers: Bonferroni, Holm-Bonferroni, and Romano-Wolf
+  step-down over caller-supplied bootstrap statistics.
 - Honest placeholders for methods that need a separate implementation pass:
-  anti-nuclear KS, fast approximate KS, E-test, Romano-Wolf, HypEx matcher,
-  ML-Rate, calibration/reweighting, HSE genetic algorithm, optimal-transport
-  matching, randomized test statistics, and Bayesian CUPAC.
+  anti-nuclear KS, HypEx matcher, calibration/reweighting, HSE genetic
+  algorithm, optimal-transport matching, and Bayesian CUPAC.
 
 The HSE repository is used only as a list of research directions. Its code is
 not copied into this project.

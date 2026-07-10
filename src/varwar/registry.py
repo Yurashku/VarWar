@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from varwar.core import ExperimentSpec, WrappedEstimator
 from varwar.estimators import (
+    ApproxKSTestEstimator,
     DifferenceInMeansEstimator,
+    EnergyDistanceTestEstimator,
     HypExABTestEstimator,
     HypExCupacEstimator,
     KSTestEstimator,
+    MLRateEstimator,
+    NearestNeighborMatchingEstimator,
     PlaceholderEstimator,
     PermutationMeanTestEstimator,
     RandomizedTTestEstimator,
@@ -28,24 +32,8 @@ def placeholder_estimators() -> list[PlaceholderEstimator]:
             "table name is unclear; needs a mathematical definition",
         ),
         PlaceholderEstimator(
-            "approx_ks_fast",
-            "needs approximation target and acceptable error/runtime tradeoff",
-        ),
-        PlaceholderEstimator(
-            "e_test",
-            "needs clarification: e-values, energy test, or another E-test variant",
-        ),
-        PlaceholderEstimator(
-            "romano_wolf",
-            "multiple-testing procedure; needs resampling and metric-family policy",
-        ),
-        PlaceholderEstimator(
             "hypex_matcher",
             "requires the internal HypEx matcher API and matching policy",
-        ),
-        PlaceholderEstimator(
-            "ml_rate",
-            "requires a clean nuisance-model and sample-splitting specification",
         ),
         PlaceholderEstimator(
             "calibration_reweighting",
@@ -109,8 +97,12 @@ def default_estimators(
             DifferenceInMeansEstimator(),
             DifferenceInMeansEstimator(name="pooled_mean_diff", variance="pooled"),
             KSTestEstimator(),
+            ApproxKSTestEstimator(),
+            EnergyDistanceTestEstimator(n_resamples=199),
             RandomizedTTestEstimator(),
             RegressionAdjustmentEstimator(),
+            MLRateEstimator(),
+            NearestNeighborMatchingEstimator(),
             TrimmedMeanEstimator(),
             WinsorizedMeanEstimator(),
         ]

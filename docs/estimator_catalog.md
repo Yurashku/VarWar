@@ -8,9 +8,13 @@
 | `welch_mean_diff` | estimator | Difference in means with Welch standard error. |
 | `pooled_mean_diff` | estimator | Difference in means with pooled variance. |
 | `ks_test` | test | Two-sample KS statistic; SciPy when available, asymptotic fallback otherwise. |
+| `approx_ks_fast` | test | Histogram/sketch approximation of KS for large sweeps. |
+| `energy_test` | test | One-dimensional energy-distance two-sample test with permutation p-value. |
 | `randomized_t_test` | test | HSE randomized/hedgehog t-statistic, reimplemented from the statistic definition. |
 | `permutation_mean_test` | test | Memory-bounded randomization test for mean difference. |
 | `regression_adjustment` | estimator | OLS treatment coefficient with HC1 standard error. |
+| `ml_rate` | estimator | Cross-fitted ridge nuisance prediction followed by robust regression adjustment. |
+| `nearest_neighbor_matching` | estimator | Covariate nearest-neighbor ATT estimate for matching baselines. |
 | `cuped+hypex_ab` | wrapper + baseline | CUPED target adjustment followed by `hypex_ab`. |
 | `hypex_cupac` | reference | PyPI HypEx CUPAC reference/parity slot; fallback is local linear CUPAC A. |
 | `sklearn_cupac_A+hypex_ab` | wrapper + baseline | RnD6 A: pre-treatment features. |
@@ -25,17 +29,14 @@
 | `wald_late` | estimator | Wald ratio for instrumented treatment take-up. |
 | `bonferroni` | correction | Multiple-testing correction helper. |
 | `holm_bonferroni` | correction | Step-down Bonferroni helper. |
+| `romano_wolf_stepdown` | correction | Step-down max-statistic correction over caller-supplied bootstrap statistics. |
 
 ## Placeholders
 
 | Name | Reason |
 | --- | --- |
 | `anti_nuclear_ks_test` | The table name is not enough to identify the exact statistic. |
-| `approx_ks_fast` | Needs approximation target and accepted error/runtime tradeoff. |
-| `e_test` | Needs clarification: e-values, energy test, or another E-test variant. |
-| `romano_wolf` | Multiple-testing method; needs metric-family and resampling policy. |
 | `hypex_matcher` | Requires internal HypEx matcher API and matching policy. |
-| `ml_rate` | Needs a clean definition of the nuisance model, splitting policy, and target estimand. |
 | `calibration_reweighting` | Needs constraints, calibration totals, and variance estimator policy. |
 | `optimal_transport_check` | Better treated as a distribution diagnostic before becoming an effect estimator. |
 | `genetic_algorithm_hse` | HSE code is not copied; needs a fresh optimization objective. |

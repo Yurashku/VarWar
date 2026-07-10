@@ -29,19 +29,20 @@ runner, composable estimator wrappers, synthetic data generation, and tests.
 - `hypex_cupac` reference/parity slot.
 - KS two-sample test, HSE randomized/hedgehog t-test, and permutation mean
   test.
+- Fast histogram KS approximation and one-dimensional energy-distance test.
 - Regression adjustment with HC1 standard error.
+- ML-rate-style cross-fitted ridge adjustment.
+- Nearest-neighbor matching baseline.
 - Ratio metric delta-method estimator.
 - Stratified and variance-weighted difference in means.
 - Robust trimmed and winsorized mean estimators.
 - Wald/LATE estimator for instrumented treatment take-up.
-- Bonferroni and Holm-Bonferroni correction helpers.
+- Bonferroni, Holm-Bonferroni, and Romano-Wolf correction helpers.
 
 ## Next R&D Candidates
 
-- ML-Rate variance reduction.
 - Calibration and reweighting estimators.
 - Optimal-transport distribution checks.
-- Randomized test statistics.
 - Doubly robust / orthogonalized estimators for covariate-rich settings.
 
 ## Acceptance Checks
