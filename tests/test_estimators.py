@@ -70,10 +70,12 @@ class EstimatorTests(unittest.TestCase):
             instrument_col="assigned",
             received_treatment_col="received",
         )
+        race = build_default_race(spec=spec)
+        self.assertEqual(race[0].name, "welch_mean_diff")
         results = run_estimator_race(
             data,
             spec,
-            build_default_race(spec=spec),
+            race,
             auxiliary_data=historical,
         )
         names = set(results["estimator"])

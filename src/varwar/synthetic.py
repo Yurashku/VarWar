@@ -55,6 +55,13 @@ def generate_synthetic_ab(config: SyntheticConfig = SyntheticConfig()) -> pd.Dat
     post_outcome_proxy = y + rng.normal(0.0, 0.05, size=n)
     strata = np.where(y_pre < np.quantile(y_pre, 0.33), "low", "mid")
     strata = np.where(y_pre > np.quantile(y_pre, 0.66), "high", strata)
+    region = np.where(x2 < -0.5, "west", np.where(x2 > 0.5, "east", "central"))
+    device = np.where(x1 < -0.4, "mobile", np.where(x1 > 0.6, "desktop", "tablet"))
+    activity_band = np.where(
+        y_pre < -0.7,
+        "low",
+        np.where(y_pre > 0.7, "high", "medium"),
+    )
 
     return pd.DataFrame(
         {
@@ -75,6 +82,9 @@ def generate_synthetic_ab(config: SyntheticConfig = SyntheticConfig()) -> pd.Dat
             "received": received,
             "y_compliance": y_compliance,
             "stratum": strata,
+            "region": pd.Categorical(region),
+            "device": pd.Categorical(device),
+            "activity_band": pd.Categorical(activity_band),
         }
     )
 

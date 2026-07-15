@@ -554,11 +554,10 @@ class EnergyDistanceTestEstimator:
 
 @dataclass
 class RandomizedTTestEstimator:
-    """Klartag-Sodin style randomized t-statistic used in the HSE notebook.
+    """Randomized t-statistic with deterministic hedgehog weights.
 
-    The implementation is written from the statistic definition, not copied
-    from the notebook. It uses deterministic hedgehog weights and Welch
-    degrees of freedom.
+    The statistic uses alternating normalized weights within each arm and
+    Welch degrees of freedom for its two-sided p-value.
     """
 
     name: str = "randomized_t_test"
@@ -861,6 +860,8 @@ class RatioDeltaMethodEstimator:
 @dataclass
 class StratifiedDifferenceInMeansEstimator:
     name: str = "stratified_mean_diff"
+    sparse_policy: str = "error"
+    stratum_weights: Mapping[Any, float] | None = None
 
     def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
         require_columns(data, [spec.treatment_col, spec.target_col, spec.stratum_col])
@@ -875,15 +876,21 @@ class StratifiedDifferenceInMeansEstimator:
         if total == 0:
             raise ValueError("No finite target values.")
 
-        effect = 0.0
-        variance = 0.0
+        components: list[tuple[float, float, float]] = []
         n_c_total = 0
         n_t_total = 0
         skipped = 0
         used = 0
         for stratum in np.unique(strata[valid]):
             mask = valid & (strata == stratum)
-            weight = float(mask.sum() / total)
+            if self.stratum_weights is None:
+                weight = float(mask.sum() / total)
+            else:
+                if stratum not in self.stratum_weights:
+                    raise ValueError(f"Missing reference weight for stratum {stratum!r}.")
+                weight = float(self.stratum_weights[stratum])
+                if not math.isfinite(weight) or weight < 0.0:
+                    raise ValueError("Stratum weights must be finite and non-negative.")
             c = y[mask & (treatment == spec.control_value)]
             t = y[mask & (treatment == spec.treatment_value)]
             if c.size < 2 or t.size < 2:
@@ -891,14 +898,34 @@ class StratifiedDifferenceInMeansEstimator:
                 continue
             mean_c, var_c, n_c = _mean_var_n(c)
             mean_t, var_t, n_t = _mean_var_n(t)
-            effect += weight * (mean_t - mean_c)
-            variance += weight**2 * (var_c / n_c + var_t / n_t)
+            components.append(
+                (weight, mean_t - mean_c, var_c / n_c + var_t / n_t)
+            )
             n_c_total += n_c
             n_t_total += n_t
             used += 1
 
         if used == 0:
             raise ValueError("No stratum has enough observations in both groups.")
+        if self.sparse_policy not in {"error", "drop_renormalize"}:
+            raise ValueError("sparse_policy must be 'error' or 'drop_renormalize'.")
+        if skipped and self.sparse_policy == "error":
+            raise ValueError(
+                f"{skipped} strata lack two finite observations in both groups."
+            )
+
+        used_weight = sum(weight for weight, _, _ in components)
+        if used_weight <= 0.0:
+            raise ValueError("Used stratum weights must have a positive sum.")
+        if self.stratum_weights is not None and skipped == 0:
+            if not math.isclose(used_weight, 1.0, rel_tol=1e-9, abs_tol=1e-12):
+                raise ValueError("Reference stratum weights must sum to one.")
+        normalized = [
+            (weight / used_weight, stratum_effect, stratum_variance)
+            for weight, stratum_effect, stratum_variance in components
+        ]
+        effect = sum(weight * value for weight, value, _ in normalized)
+        variance = sum(weight**2 * value for weight, _, value in normalized)
 
         se = math.sqrt(variance)
         df = float(max(n_c_total + n_t_total - 2 * used, 1))
@@ -910,7 +937,15 @@ class StratifiedDifferenceInMeansEstimator:
             n_c_total,
             n_t_total,
             spec.alpha,
-            {"strata_used": used, "strata_skipped": skipped},
+            {
+                "strata_used": used,
+                "strata_skipped": skipped,
+                "sparse_policy": self.sparse_policy,
+                "used_weight": used_weight,
+                "weight_source": (
+                    "reference" if self.stratum_weights is not None else "observed_sample"
+                ),
+            },
         )
 
 

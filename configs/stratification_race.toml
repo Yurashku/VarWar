@@ -1,0 +1,16 @@
+[synthetic]
+n = 3000
+effect = 0.25
+seed = 42
+
+[binning]
+columns = ["x1", "x2"]
+strategy = "quantile"
+n_bins = 5
+
+[stratification]
+category_cols = ["region", "device", "x1__bin", "x2__bin"]
+n_strata = 12
+neyman_sample_size = 600
+measure_memory = true
+random_state = 42

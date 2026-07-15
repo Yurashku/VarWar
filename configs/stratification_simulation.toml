@@ -1,0 +1,14 @@
+[simulation]
+n_trials = 10
+n = 1200
+effects = [0.0, 0.25]
+seed = 100
+
+[stratification]
+category_cols = ["region", "device", "activity_band"]
+n_strata = 5
+neyman_sample_size = 240
+population_size = 12
+max_generations = 15
+elite_size = 2
+patience = 5

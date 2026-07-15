@@ -44,10 +44,6 @@ def placeholder_estimators() -> list[PlaceholderEstimator]:
             "currently a distribution diagnostic, not an effect estimator",
         ),
         PlaceholderEstimator(
-            "genetic_algorithm_hse",
-            "HSE code is not copied; needs a fresh optimization objective",
-        ),
-        PlaceholderEstimator(
             "optimal_transport_matching",
             "needs matching distance, regularization, and inference policy",
         ),
@@ -70,9 +66,9 @@ def default_estimators(
         gated_in_time_cols=("operational_load",),
         unsafe_demo_cols=("post_outcome_proxy",),
     )
-    hypex = HypExABTestEstimator()
     estimators = [
-        hypex,
+        DifferenceInMeansEstimator(),
+        HypExABTestEstimator(),
         WrappedEstimator(CupedTransformer(), HypExABTestEstimator()),
         HypExCupacEstimator(cupac_features=spec.pre_treatment_features()),
     ]
@@ -94,7 +90,6 @@ def default_estimators(
     estimators.extend(
         [
             WrappedEstimator(WinsorizeTransformer(), HypExABTestEstimator()),
-            DifferenceInMeansEstimator(),
             DifferenceInMeansEstimator(name="pooled_mean_diff", variance="pooled"),
             KSTestEstimator(),
             ApproxKSTestEstimator(),

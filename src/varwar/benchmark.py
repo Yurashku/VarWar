@@ -9,6 +9,10 @@ import pandas as pd
 
 from varwar.core import Estimator, ExperimentSpec, WrappedEstimator
 from varwar.registry import default_estimators
+from varwar.stratification_benchmark import (
+    run_stratification_race,
+    summarize_stratification_trials,
+)
 
 
 def build_default_race(

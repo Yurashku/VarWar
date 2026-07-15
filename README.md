@@ -7,7 +7,9 @@ benchmarks, composable estimators, and agent-facing instructions.
 
 ## What Is Implemented
 
-- Baseline A/B estimator backed by the PyPI `hypex` package when available:
+- Canonical statistical baseline: closed-form Welch t-test
+  `welch_mean_diff`.
+- Integration/parity A/B baseline backed by the PyPI `hypex` package:
   `hypex_ab`.
 - Wrapper estimators: `cuped+hypex_ab`, `hypex_cupac`, and the local CUPAC
   RnD6 chain.
@@ -22,12 +24,12 @@ benchmarks, composable estimators, and agent-facing instructions.
   Wald/LATE.
 - Multiple-testing helpers: Bonferroni, Holm-Bonferroni, and Romano-Wolf
   step-down over caller-supplied bootstrap statistics.
+- Design preprocessing: memory-efficient numeric feature binning and genetic
+  reduction of atomic category combinations with A/B-proportional or Neyman
+  variance objectives.
 - Honest placeholders for methods that need a separate implementation pass:
-  anti-nuclear KS, HypEx matcher, calibration/reweighting, HSE genetic
-  algorithm, optimal-transport matching, and Bayesian CUPAC.
-
-The HSE repository is used only as a list of research directions. Its code is
-not copied into this project.
+  anti-nuclear KS, HypEx matcher, calibration/reweighting,
+  optimal-transport matching, and Bayesian CUPAC.
 
 ## Quick Start
 
@@ -35,6 +37,7 @@ not copied into this project.
 $py = "C:\Users\ivan\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
 & $py -m unittest discover -s tests
 & $py examples\run_synthetic_race.py
+& $py examples\run_stratification_race.py
 ```
 
 For a regular Python environment:
@@ -43,16 +46,19 @@ For a regular Python environment:
 python -m pip install -e ".[dev]"
 python -m unittest discover -s tests
 python examples/run_synthetic_race.py
+python examples/run_stratification_race.py
+python examples/run_stratification_simulation.py --trials 10
 ```
 
 ## Project Layout
 
-- `src/varwar/` - estimator interfaces, wrappers, synthetic data, and benchmark
-  runner.
+- `src/varwar/` - estimators, target transformers, design preprocessors,
+  feature adapters, synthetic data, and benchmark runners.
 - `tests/` - lightweight regression tests based on `unittest`.
 - `examples/` - user-facing scripts for synthetic races.
 - `configs/` - benchmark defaults.
-- `docs/` - R&D plan and estimator catalog.
+- `docs/methods/` - current Russian method catalog and detailed documentation.
+- `docs/` - R&D plan and historical worksheet mappings.
 - `legacy/` - previous notebooks and prototype files, kept for context only.
 
 ## Design Notes
@@ -61,6 +67,10 @@ Estimators and wrappers are separate concepts. A base estimator summarizes an
 experiment outcome, while a wrapper transforms the target first and then
 delegates to a base estimator. This lets CUPED and CUPAC turn the same HypEx
 A/B baseline into new race participants without duplicating inference code.
+
+Design preprocessing is evaluated in a separate race because it changes the
+experiment design rather than directly estimating an effect. See
+`docs/methods/README.md` for the complete taxonomy.
 
 The current `hypex_ab` implementation is a native compatibility adapter for the
 HypEx A/B baseline slot. It first tries the PyPI `hypex` package, then falls

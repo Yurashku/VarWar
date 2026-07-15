@@ -8,12 +8,17 @@ Important defaults:
 - Old notebooks and prototypes live in `legacy`.
 - HypEx baselines use the PyPI `hypex` package when available and are
   represented by `hypex_ab`, `cuped+hypex_ab`, and `hypex_cupac`.
+- `welch_mean_diff` is the canonical statistical baseline. HypEx rows measure
+  package parity and wrapper integration.
 - CUPAC is not one layer: keep the RnD6 A/B/C feature-chain variants separate.
-- HSE code should not be imported or translated line by line.
+- External implementations are research references only. Public documentation
+  must describe the algorithms and guarantees implemented in VarWar.
+- Genetic strata reduction is a design preprocessor with a separate race;
+  numeric binning is a target-free feature adapter.
 
 When working autonomously:
 
-1. Inspect `docs/rnd_plan.md` and `docs/estimator_catalog.md`.
+1. Inspect `docs/methods/README.md` and the relevant detailed method page.
 2. Inspect `docs/estimator_sheet_v02.md` before changing race membership.
 3. Add or update tests before claiming an estimator is ready.
 4. Keep placeholder methods explicit and searchable.
