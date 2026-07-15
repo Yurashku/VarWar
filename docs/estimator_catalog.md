@@ -2,6 +2,7 @@
 
 This is a compact compatibility index. The current taxonomy and method
 documentation live in [`methods/README.md`](methods/README.md).
+The complete status registry is [`methods/all_methods.md`](methods/all_methods.md).
 
 ## Ready
 
@@ -50,7 +51,9 @@ documentation live in [`methods/README.md`](methods/README.md).
 | `calibration_reweighting` | Needs constraints, calibration totals, and variance estimator policy. |
 | `optimal_transport_check` | Better treated as a distribution diagnostic before becoming an effect estimator. |
 | `optimal_transport_matching` | Needs matching distance, regularization, and inference policy. |
-| `bayesian_cupac` | Needs Bayesian model and posterior decision rule. |
+| `bayesian_cupac` | Target-transformer placeholder; needs a Bayesian model and posterior decision rule. |
+| `nonlinear_cupac` | Selected target-transformer candidate; needs an honest model and tuning contract. |
+| `prognostic_score_block_randomization` | Selected prospective design candidate; needs a randomized block-assignment contract. |
 
 ## Additional Candidates
 

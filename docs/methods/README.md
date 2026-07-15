@@ -15,6 +15,7 @@ pipeline. Одинаковая терминология используется
 
 ## Навигация
 
+- [Полный реестр методов и статусов](all_methods.md)
 - [Эстиматоры](estimators.md)
 - [Трансформации target](target_transformers.md)
 - [Предобработка дизайна](design_preprocessors.md)

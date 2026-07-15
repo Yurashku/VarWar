@@ -25,4 +25,5 @@
 | `permutation_mean_test` | Randomization test mean difference | Resample count и seed | Не нужен | `O(RN)` | Реализован memory-bounded; Monte Carlo error зависит от `R` |
 
 Методы, математическая постановка которых пока не идентифицирована, остаются
-явными `PlaceholderEstimator` и не имитируют готовую реализацию.
+явными `PlaceholderEstimator` и не имитируют готовую реализацию. Полный список
+готовых методов и заглушек находится в [общем реестре](all_methods.md).

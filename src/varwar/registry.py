@@ -22,6 +22,10 @@ from varwar.estimators import (
     WinsorizedMeanEstimator,
 )
 from varwar.feature_sets import default_cupac_feature_sets
+from varwar.placeholders import (
+    PlaceholderDesignPreprocessor,
+    PlaceholderTargetTransformer,
+)
 from varwar.transforms import CupedTransformer, LinearCupacTransformer, WinsorizeTransformer
 
 
@@ -47,10 +51,34 @@ def placeholder_estimators() -> list[PlaceholderEstimator]:
             "optimal_transport_matching",
             "needs matching distance, regularization, and inference policy",
         ),
-        PlaceholderEstimator(
+    ]
+
+
+def placeholder_target_transformers() -> list[PlaceholderTargetTransformer]:
+    """Return target-adjustment candidates that are intentionally non-executable."""
+
+    return [
+        PlaceholderTargetTransformer(
             "bayesian_cupac",
             "needs a Bayesian model and posterior decision rule",
         ),
+        PlaceholderTargetTransformer(
+            "nonlinear_cupac",
+            "needs an honest reference-fit model contract, tuning policy, and "
+            "resource-bounded model family",
+        ),
+    ]
+
+
+def placeholder_design_preprocessors() -> list[PlaceholderDesignPreprocessor]:
+    """Return experiment-design candidates kept outside estimator races."""
+
+    return [
+        PlaceholderDesignPreprocessor(
+            "prognostic_score_block_randomization",
+            "needs a randomized block-construction and assignment contract, "
+            "allocation ratios, and matching randomization-aware inference",
+        )
     ]
 
 
