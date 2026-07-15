@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import time
 import tracemalloc
 from collections.abc import Iterable
@@ -35,6 +36,9 @@ def _estimate_one(
 ) -> Any:
     if isinstance(estimator, WrappedEstimator):
         return estimator.estimate(data, spec, auxiliary_data=auxiliary_data)
+    estimate_with_auxiliary = getattr(estimator, "estimate_with_auxiliary", None)
+    if callable(estimate_with_auxiliary):
+        return estimate_with_auxiliary(data, spec, auxiliary_data)
     return estimator.estimate(data, spec)
 
 
@@ -56,6 +60,7 @@ def run_estimator_race(
         start = time.perf_counter()
         peak_memory = None
         if measure_memory:
+            gc.collect()
             tracemalloc.start()
         try:
             result = _estimate_one(estimator, data, spec, auxiliary_data)

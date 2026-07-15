@@ -18,6 +18,7 @@ def estimate_with_hypex_abtest(
     data: pd.DataFrame,
     spec: ExperimentSpec,
     *,
+    auxiliary_data: pd.DataFrame | None = None,
     cuped_features: dict[str, str] | None = None,
     cupac_features: dict[str, list[str]] | None = None,
     additional_tests: list[str] | None = None,
@@ -26,15 +27,28 @@ def estimate_with_hypex_abtest(
 
     try:
         from hypex import ABTest
-        from hypex.dataset import Dataset, FeatureRole, InfoRole, TargetRole, TreatmentRole
+        from hypex.dataset import (
+            Dataset,
+            FeatureRole,
+            InfoRole,
+            PreTargetRole,
+            TargetRole,
+            TreatmentRole,
+        )
     except Exception as exc:  # pragma: no cover - depends on optional install
         raise HypExBackendUnavailable(str(exc)) from exc
 
     try:
-        roles: dict[str, Any] = {
-            spec.treatment_col: TreatmentRole(int),
-            spec.target_col: TargetRole(float),
-        }
+        target_cupac_features = (
+            list(cupac_features.get(spec.target_col, []))
+            if cupac_features
+            else []
+        )
+        roles: dict[str, Any] = {spec.treatment_col: TreatmentRole(int)}
+        roles[spec.target_col] = TargetRole(
+            float,
+            cofounders=target_cupac_features,
+        )
         if spec.unit_col and spec.unit_col in data.columns:
             roles[spec.unit_col] = InfoRole()
 
@@ -43,17 +57,64 @@ def estimate_with_hypex_abtest(
         feature_cols.update(spec.gated_in_time_cols)
         if spec.pre_target_col and spec.pre_target_col in data.columns:
             feature_cols.add(spec.pre_target_col)
-        for column in feature_cols:
-            if column in data.columns and column not in roles:
-                roles[column] = FeatureRole(float)
+        clean = data[[column for column in roles if column in data.columns]].copy(
+            deep=False
+        )
+        if target_cupac_features:
+            if spec.pre_target_col is None:
+                raise HypExBackendUnavailable(
+                    "HypEx CUPAC requires spec.pre_target_col."
+                )
+            pre_target = spec.pre_target_col
+            pre_target_lag2 = f"{pre_target}__lag2"
+            if pre_target not in data or pre_target_lag2 not in data:
+                raise HypExBackendUnavailable(
+                    "HypEx CUPAC requires two aligned pre-period target columns: "
+                    f"{pre_target!r} and {pre_target_lag2!r}."
+                )
+            clean[pre_target] = np.asarray(data[pre_target], dtype=float)
+            clean[pre_target_lag2] = np.asarray(data[pre_target_lag2], dtype=float)
+            roles[pre_target] = PreTargetRole(
+                float,
+                parent=spec.target_col,
+                lag=1,
+            )
+            roles[pre_target_lag2] = PreTargetRole(
+                float,
+                parent=spec.target_col,
+                lag=2,
+            )
+            cofounders = [
+                column for column in target_cupac_features if column != pre_target
+            ]
+            roles[spec.target_col] = TargetRole(float, cofounders=cofounders)
+            for column in cofounders:
+                lag2_column = f"{column}__lag2"
+                if column not in data or lag2_column not in data:
+                    raise HypExBackendUnavailable(
+                        "HypEx CUPAC feature requires aligned lag-1/lag-2 columns: "
+                        f"{column!r}, {lag2_column!r}."
+                    )
+                roles[column] = FeatureRole(float, parent=column, lag=1)
+                clean[column] = np.asarray(data[column], dtype=float)
+                clean[lag2_column] = np.asarray(data[lag2_column], dtype=float)
+                roles[lag2_column] = FeatureRole(
+                    float,
+                    parent=column,
+                    lag=2,
+                )
+        else:
+            for column in feature_cols:
+                if column in data.columns and column not in roles:
+                    roles[column] = FeatureRole(float)
+                    clean[column] = np.asarray(data[column], dtype=float)
 
-        clean = data[[column for column in roles if column in data.columns]].copy(deep=False)
+        clean = clean[[column for column in roles if column in clean.columns]]
         dataset = Dataset(roles=roles, data=clean)
         ab_test = ABTest(
             additional_tests=additional_tests or ["t-test"],
             multitest_method="holm",
             cuped_features=cuped_features,
-            cupac_features=cupac_features,
             enable_cupac=bool(cupac_features),
             cupac_models="linear",
         )
@@ -62,7 +123,10 @@ def estimate_with_hypex_abtest(
         resume_df = getattr(resume, "data", resume)
         if not isinstance(resume_df, pd.DataFrame):
             raise HypExBackendUnavailable("HypEx ABTest resume is not a pandas DataFrame.")
-        row = _select_target_row(resume_df, spec.target_col)
+        output_target = (
+            f"{spec.target_col}_cupac" if cupac_features else spec.target_col
+        )
+        row = _select_target_row(resume_df, output_target)
         effect = _first_present(row, ["difference", "Difference", "mean difference"])
         p_value = _first_present(row, ["TTest p-value 1", "TTest p-value", "p-value"])
         n_control, n_treatment, raw_se, df = _group_statistics(data, spec)

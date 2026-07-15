@@ -23,6 +23,13 @@ from varwar.method_catalog import (
     get_method_record,
     method_catalog,
 )
+from varwar.pipeline_benchmark import (
+    SyntheticPipelineRaceConfig,
+    format_pipeline_summary_ru,
+    profile_synthetic_pipeline_memory,
+    run_synthetic_pipeline_race,
+    summarize_synthetic_pipeline_race,
+)
 from varwar.estimators import (
     ApproxKSTestEstimator,
     DifferenceInMeansEstimator,
@@ -49,7 +56,6 @@ from varwar.stratification import (
     ABProportionalVarianceObjective,
     AtomicStrataSummary,
     GeneticStrataReducer,
-    NeymanVarianceObjective,
     ObjectiveEvaluation,
     StrataReductionResult,
     StratificationObjective,
@@ -73,10 +79,14 @@ __all__ = [
     "get_method_record",
     "PlaceholderTargetTransformer",
     "PlaceholderDesignPreprocessor",
+    "SyntheticPipelineRaceConfig",
+    "run_synthetic_pipeline_race",
+    "profile_synthetic_pipeline_memory",
+    "summarize_synthetic_pipeline_race",
+    "format_pipeline_summary_ru",
     "ABProportionalVarianceObjective",
     "AtomicStrataSummary",
     "GeneticStrataReducer",
-    "NeymanVarianceObjective",
     "ObjectiveEvaluation",
     "StrataReductionResult",
     "StratificationObjective",

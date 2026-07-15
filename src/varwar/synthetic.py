@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -22,12 +23,26 @@ def generate_synthetic_ab(config: SyntheticConfig = SyntheticConfig()) -> pd.Dat
     rng = np.random.default_rng(config.seed)
     n = config.n
     treatment = rng.binomial(1, 0.5, size=n)
-    y_pre = rng.normal(0.0, 1.0, size=n)
+    y_pre_lag2 = rng.normal(0.0, 1.0, size=n)
+    lag_correlation = 0.65
+    y_pre = (
+        lag_correlation * y_pre_lag2
+        + math.sqrt(1.0 - lag_correlation**2) * rng.normal(0.0, 1.0, size=n)
+    )
     x1 = config.covariate_signal * y_pre + rng.normal(0.0, 0.7, size=n)
     x2 = rng.normal(0.0, 1.0, size=n)
     calendar_index = rng.normal(0.0, 1.0, size=n)
     market_index = 0.5 * calendar_index + rng.normal(0.0, 0.6, size=n)
     operational_load = 0.35 * y_pre + 0.4 * calendar_index + rng.normal(0.0, 0.7, size=n)
+    x1_lag2 = config.covariate_signal * y_pre_lag2 + rng.normal(0.0, 0.7, size=n)
+    x2_lag2 = rng.normal(0.0, 1.0, size=n)
+    calendar_index_lag2 = rng.normal(0.0, 1.0, size=n)
+    market_index_lag2 = 0.5 * calendar_index_lag2 + rng.normal(0.0, 0.6, size=n)
+    operational_load_lag2 = (
+        0.35 * y_pre_lag2
+        + 0.4 * calendar_index_lag2
+        + rng.normal(0.0, 0.7, size=n)
+    )
     if config.heavy_tail:
         noise = rng.standard_t(df=3, size=n) * config.noise_scale
     else:
@@ -70,11 +85,17 @@ def generate_synthetic_ab(config: SyntheticConfig = SyntheticConfig()) -> pd.Dat
             "y": y,
             "y0": y0,
             "y_pre": y_pre,
+            "y_pre__lag2": y_pre_lag2,
             "x1": x1,
+            "x1__lag2": x1_lag2,
             "x2": x2,
+            "x2__lag2": x2_lag2,
             "calendar_index": calendar_index,
+            "calendar_index__lag2": calendar_index_lag2,
             "market_index": market_index,
+            "market_index__lag2": market_index_lag2,
             "operational_load": operational_load,
+            "operational_load__lag2": operational_load_lag2,
             "post_outcome_proxy": post_outcome_proxy,
             "numerator": numerator,
             "denominator": denominator,

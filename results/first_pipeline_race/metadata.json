@@ -1,0 +1,43 @@
+{
+  "config": {
+    "n_trials": 100,
+    "n": 2000,
+    "alternative_effect": 0.15,
+    "covariate_signal": 0.75,
+    "noise_scale": 1.0,
+    "heavy_tail": false,
+    "seed": 20260715,
+    "category_cols": [
+      "region",
+      "device",
+      "activity_band"
+    ],
+    "n_strata": 6,
+    "population_size": 16,
+    "max_generations": 25,
+    "elite_size": 3,
+    "patience": 7,
+    "min_macro_stratum_size": 8,
+    "mutation_probability": 0.2,
+    "prefer_pypi_hypex": true,
+    "alpha": 0.05
+  },
+  "rows": 3000,
+  "successful_rows": 3000,
+  "backends": [
+    "pypi_hypex"
+  ],
+  "memory_profile": {
+    "trials": 1,
+    "seed": 20260715,
+    "warmup": true,
+    "metric": "tracemalloc peak Python allocations",
+    "includes_native_numpy_blas_buffers": false
+  },
+  "package_versions": {
+    "hypex": "1.0.6",
+    "numpy": "1.26.4",
+    "pandas": "2.2.3",
+    "scipy": "1.13.1"
+  }
+}

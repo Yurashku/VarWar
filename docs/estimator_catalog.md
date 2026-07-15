@@ -39,7 +39,7 @@ The complete status registry is [`methods/all_methods.md`](methods/all_methods.m
 
 | Name | Type | Notes |
 | --- | --- | --- |
-| `genetic_strata_reducer` | design preprocessor | Reduces atomic categorical combinations to exactly `U` macrostrata using A/B-proportional or Neyman variance objectives. |
+| `genetic_strata_reducer` | design preprocessor | Reduces atomic categorical combinations to exactly `U` macrostrata using the A/B-proportional variance objective. |
 | `numeric_feature_binner` | feature adapter | Learns fixed categorical bins for numeric features without using target values. |
 
 ## Placeholders

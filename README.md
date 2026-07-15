@@ -25,8 +25,8 @@ benchmarks, composable estimators, and agent-facing instructions.
 - Multiple-testing helpers: Bonferroni, Holm-Bonferroni, and Romano-Wolf
   step-down over caller-supplied bootstrap statistics.
 - Design preprocessing: memory-efficient numeric feature binning and genetic
-  reduction of atomic category combinations with A/B-proportional or Neyman
-  variance objectives.
+  reduction of atomic category combinations with the A/B-proportional
+  variance objective.
 - Honest placeholders for methods that need a separate implementation pass:
   anti-nuclear KS, HypEx matcher, calibration/reweighting,
   optimal-transport matching, Bayesian CUPAC, nonlinear CUPAC, and
@@ -47,9 +47,13 @@ For a regular Python environment:
 python -m pip install -e ".[dev]"
 python -m unittest discover -s tests
 python examples/run_synthetic_race.py
+python examples/run_first_pipeline_race.py --trials 10
 python examples/run_stratification_race.py
 python examples/run_stratification_simulation.py --trials 10
 ```
+
+Отчёт первой полной синтетической гонки находится в
+[`results/first_pipeline_race/summary_ru.md`](results/first_pipeline_race/summary_ru.md).
 
 ## Project Layout
 

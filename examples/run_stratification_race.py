@@ -63,7 +63,6 @@ def main() -> None:
         category_cols=tuple(race["category_cols"]),
         reference_target_col="y_pre",
         n_strata=int(race["n_strata"]),
-        neyman_sample_size=int(race["neyman_sample_size"]),
         measure_memory=bool(race["measure_memory"]),
         random_state=int(race["random_state"]),
         validation_data=holdout,

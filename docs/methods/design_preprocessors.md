@@ -9,11 +9,11 @@
 | --- | --- |
 | ID / категория | `genetic_strata_reducer` / `DesignPreprocessor` |
 | Вход / выход | Категории + historical target → frozen atom-to-macrostratum mapping |
-| Цель | Минимизировать `ab_proportional` или `neyman` variance objective |
+| Цель | Минимизировать `ab_proportional` variance objective |
 | Estimand | Отсутствует; его задаёт следующий estimator |
 | Период данных | Fit на historical/pre-experiment; transform не читает outcome |
 | Сложность | `O(N)` aggregation + примерно `O(PGH)` search |
-| Статус | Оба objective и integer Neyman allocation реализованы и протестированы |
+| Статус | A/B objective, fit/transform и holdout diagnostics реализованы и протестированы |
 | Ограничения | GA не гарантирует global optimum; неизвестные комбинации требуют явной policy |
 
 `fit_summary()` переиспользует готовые атомарные статистики; после агрегации
