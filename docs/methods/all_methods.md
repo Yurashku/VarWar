@@ -71,9 +71,7 @@
 | `mean_sorted_reduction` | Реализован для R&D | Детерминированное укрупнение по historical means | stratification race |
 | `genetic_strata_reducer` | Реализован для R&D | GA-укрупнение атомарных страт до фиксированного числа макрострат | stratification race |
 | `ab_proportional` | Реализован для R&D | Objective для естественного пропорционального A/B-трафика | GA и diagnostics |
-| `neyman` | Реализован для R&D | Objective и точная integer Neyman allocation | GA и stratification race |
 | `genetic_strata_ab` | Реализован для R&D | Конфигурация GA с `ab_proportional` | stratification race |
-| `genetic_strata_neyman` | Реализован для R&D | Конфигурация GA с `neyman` | stratification race |
 | `prognostic_score_block_randomization` | Заглушка: кандидат R&D | Рандомизация treatment внутри блоков близкого pre-treatment prognostic score | только prospective experiment design |
 
 ## InferenceCorrection

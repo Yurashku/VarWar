@@ -20,7 +20,6 @@ from varwar.stratification import (
     ABProportionalVarianceObjective,
     AtomicStrataSummary,
     GeneticStrataReducer,
-    NeymanVarianceObjective,
     aggregate_atomic_strata,
     canonicalize_partition,
 )
@@ -37,7 +36,7 @@ def _grouped_reference() -> pd.DataFrame:
 
 def _binary_partition_optimum(
     summary: AtomicStrataSummary,
-    objective: ABProportionalVarianceObjective | NeymanVarianceObjective,
+    objective: ABProportionalVarianceObjective,
 ) -> float:
     best = math.inf
     for remainder in itertools.product((0, 1), repeat=summary.n_atomic_strata - 1):
@@ -88,45 +87,6 @@ class StratificationMathTests(unittest.TestCase):
             expected / (100 * 0.4 * 0.6),
         )
 
-    def test_integer_neyman_allocation_is_globally_optimal_on_small_case(self) -> None:
-        counts = np.array([5, 7, 9])
-        variances = np.array([1.0, 4.0, 2.0])
-        objective = NeymanVarianceObjective(sample_size=9, min_sample_per_stratum=1)
-        result = objective.evaluate(counts, variances)
-        self.assertEqual(int(result.allocation.sum()), 9)  # type: ignore[union-attr]
-        self.assertTrue(np.all(result.allocation >= 1))  # type: ignore[operator]
-        self.assertTrue(np.all(result.allocation <= counts))  # type: ignore[operator]
-
-        brute_force = math.inf
-        for first in range(1, counts[0] + 1):
-            for second in range(1, counts[1] + 1):
-                third = 9 - first - second
-                if not 1 <= third <= counts[2]:
-                    continue
-                allocation = np.array([first, second, third], dtype=float)
-                score = objective._score(counts, variances, allocation)
-                brute_force = min(brute_force, score)
-        self.assertAlmostEqual(result.score, brute_force)
-        self.assertLessEqual(result.continuous_score, result.score + 1e-12)
-
-    def test_neyman_allocation_rejects_infeasible_bounds_and_handles_zero_variance(self) -> None:
-        counts = np.array([3, 4])
-        variances = np.zeros(2)
-        result = NeymanVarianceObjective(
-            sample_size=5,
-            min_sample_per_stratum=1,
-        ).evaluate(counts, variances)
-        self.assertEqual(int(result.allocation.sum()), 5)  # type: ignore[union-attr]
-        self.assertTrue(np.all(result.allocation >= 1))  # type: ignore[operator]
-        self.assertEqual(result.score, 0.0)
-        with self.assertRaises(ValueError):
-            NeymanVarianceObjective(sample_size=1).evaluate(counts, variances)
-        with self.assertRaises(ValueError):
-            NeymanVarianceObjective(sample_size=8, min_sample_per_stratum=1).evaluate(
-                counts,
-                variances,
-            )
-
     def test_partition_canonicalization_removes_label_symmetry(self) -> None:
         first = canonicalize_partition(np.array([0, 0, 1, 2, 1]))
         second = canonicalize_partition(np.array([9, 9, 3, 7, 3]))
@@ -155,28 +115,6 @@ class GeneticReducerTests(unittest.TestCase):
         pd.testing.assert_frame_equal(first.result_.history, second.result_.history)  # type: ignore[union-attr]
         self.assertEqual(first.result_.n_strata, 2)  # type: ignore[union-attr]
         self.assertTrue((first.macro_summary_["count"] >= 4).all())  # type: ignore[index]
-
-    def test_ga_neyman_mode_matches_small_partition_optimum(self) -> None:
-        data = _grouped_reference()
-        summary = AtomicStrataSummary.from_frame(data, ("atom",), "y_pre")
-        objective = NeymanVarianceObjective(sample_size=48, min_sample_per_stratum=2)
-        optimum = _binary_partition_optimum(summary, objective)
-        reducer = GeneticStrataReducer(
-            category_cols=("atom",),
-            reference_target_col="y_pre",
-            n_strata=2,
-            objective=objective,
-            population_size=18,
-            max_generations=35,
-            elite_size=3,
-            patience=10,
-            random_state=6,
-        ).fit(data)
-        self.assertAlmostEqual(reducer.result_.train_score, optimum)  # type: ignore[union-attr]
-        allocation = np.asarray(reducer.macro_summary_["allocation"], dtype=int)  # type: ignore[index]
-        self.assertEqual(int(allocation.sum()), 48)
-        self.assertTrue(np.all(allocation >= 2))
-        self.assertTrue(np.all(allocation <= reducer.macro_summary_["count"]))  # type: ignore[index]
 
     def test_preaggregated_summary_produces_the_same_mapping(self) -> None:
         data = _grouped_reference()
@@ -316,7 +254,7 @@ class StratificationRaceTests(unittest.TestCase):
         self.assertAlmostEqual(result.effect, 2.5)
         self.assertEqual(result.diagnostics["weight_source"], "reference")
 
-    def test_race_contains_ab_and_neyman_preprocessors(self) -> None:
+    def test_race_contains_ab_preprocessor(self) -> None:
         config = SyntheticConfig(n=900, effect=0.2, seed=21)
         data = generate_synthetic_ab(config)
         reference = generate_historical_controls(config)
@@ -334,11 +272,6 @@ class StratificationRaceTests(unittest.TestCase):
         reducers = {
             "ga_ab": GeneticStrataReducer(
                 objective=ABProportionalVarianceObjective(),
-                random_state=2,
-                **common,
-            ),
-            "ga_neyman": GeneticStrataReducer(
-                objective=NeymanVarianceObjective(sample_size=180),
                 random_state=2,
                 **common,
             ),
@@ -361,7 +294,6 @@ class StratificationRaceTests(unittest.TestCase):
             true_effect=config.effect,
         )
         self.assertIn("ab_proportional", set(results["objective"]))
-        self.assertIn("neyman", set(results["objective"]))
         ga_rows = results[results["preprocessor"].isin(reducers)]
         self.assertTrue((ga_rows["status"] == "ok").all())
         self.assertTrue(np.isfinite(ga_rows["validation_score"]).all())
@@ -373,12 +305,6 @@ class StratificationRaceTests(unittest.TestCase):
         self.assertIn("cuped+hypex_ab", pipelines)
         self.assertIn("hypex_cupac", pipelines)
         self.assertTrue(any("sklearn_cupac_A_plus_B_plus_C" in name for name in pipelines))
-        neyman_rows = results[results["preprocessor"] == "ga_neyman"]
-        self.assertTrue((neyman_rows["analysis_rows"] == 180).all())
-        self.assertTrue(neyman_rows["neyman_allocation_applied"].all())
-        self.assertTrue(
-            (neyman_rows["diag_weight_source"] == "reference").all()
-        )
 
     def test_trial_summary_labels_fpr_and_power(self) -> None:
         trials = pd.DataFrame(

@@ -14,7 +14,6 @@ from varwar import (
     ABProportionalVarianceObjective,
     ExperimentSpec,
     GeneticStrataReducer,
-    NeymanVarianceObjective,
     run_stratification_race,
     summarize_stratification_trials,
 )
@@ -73,12 +72,6 @@ def main() -> None:
             reducers = {
                 "genetic_strata_ab": GeneticStrataReducer(
                     objective=ABProportionalVarianceObjective(),
-                    **common,
-                ),
-                "genetic_strata_neyman": GeneticStrataReducer(
-                    objective=NeymanVarianceObjective(
-                        sample_size=int(settings["neyman_sample_size"])
-                    ),
                     **common,
                 ),
             }

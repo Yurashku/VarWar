@@ -11,7 +11,7 @@
 | `pooled_mean_diff` | Разность средних | Не менее 2 строк на arm | Не нужен | `O(N)` | Реализован; требует равных дисперсий |
 | `regression_adjustment` | Treatment coefficient | Числовые covariates | Только pre-treatment | `O(Nd²+d³)` | Реализован с HC1; линейная спецификация |
 | `ml_rate` | Cross-fitted adjusted ATE | Числовые covariates | Только pre-treatment | Зависит от folds и ridge fit | Реализован; нужен достаточный размер folds |
-| `stratified_mean_diff` | Взвешенный ATE внутри страт | Stratum column и optional population weights | Страты строятся до теста | `O(N+U)` | Реализован; Neyman design требует `N_g/N`, sparse strata дают ошибку, opt-in `drop_renormalize` перенормирует веса |
+| `stratified_mean_diff` | Взвешенный ATE внутри страт | Stratum column и optional population weights | Страты строятся до теста | `O(N+U)` | Реализован; sparse strata дают ошибку, opt-in `drop_renormalize` перенормирует веса |
 | `variance_weighted_stratified` | Inverse-variance summary | Готовая stratum column | Страты строятся до теста | `O(N+U)` | Реализован; estimand зависит от precision weights |
 | `ratio_delta` | Разность ratio metrics | Numerator, denominator | Не нужен | `O(N)` | Реализован; delta approximation нестабилен около нулевого denominator mean |
 | `wald_late` | LATE для compliers | Instrument, received treatment | Не нужен | `O(N)` | Реализован; требует ненулевую first stage |

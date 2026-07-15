@@ -34,9 +34,6 @@ final inference
 симуляций результаты объединяются и передаются в
 `summarize_stratification_trials`, который рассчитывает bias, RMSE, empirical
 standard deviation и rejection rate (FPR при true effect 0, power иначе).
-Neyman pipelines дополнительно применяют рассчитанные integer quotas к данным,
-используя только назначенную stratum column и фиксированный seed.
-
 Готовый null/alternative прогон находится в
 `examples/run_stratification_simulation.py`; число повторов задаётся через
 `--trials` или `configs/stratification_simulation.toml`.

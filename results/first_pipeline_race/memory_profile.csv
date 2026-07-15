@@ -1,0 +1,16 @@
+data_scenario,track,pipeline,peak_python_memory_bytes,peak_python_memory_mib,memory_profile_trials,memory_profile_seed
+linear_gaussian,full_traffic,welch_mean_diff,37300.0,0.035572052001953125,1,20260715
+linear_gaussian,full_traffic,hypex_ab,751037.0,0.7162446975708008,1,20260715
+linear_gaussian,full_traffic,cuped+hypex_ab,789768.0,0.7531814575195312,1,20260715
+linear_gaussian,full_traffic,hypex_cupac,1034675.0,0.9867429733276367,1,20260715
+linear_gaussian,full_traffic,sklearn_cupac_A+hypex_ab,791300.0,0.7546424865722656,1,20260715
+linear_gaussian,full_traffic,sklearn_cupac_A_plus_B+hypex_ab,795776.0,0.7589111328125,1,20260715
+linear_gaussian,full_traffic,sklearn_cupac_A_plus_B_plus_C+hypex_ab,794501.0,0.757695198059082,1,20260715
+linear_gaussian,full_traffic,regression_adjustment,318636.0,0.3038749694824219,1,20260715
+linear_gaussian,full_traffic,ml_rate,440155.0,0.41976451873779297,1,20260715
+linear_gaussian,full_traffic,trimmed_mean_diff,51060.0,0.048694610595703125,1,20260715
+linear_gaussian,full_traffic,winsorized_mean_diff,51364.0,0.048984527587890625,1,20260715
+linear_gaussian,full_traffic,genetic_strata_ab+stratified_mean_diff,190939.0,0.18209362030029297,1,20260715
+linear_gaussian,full_traffic,genetic_strata_ab+cuped+stratified_mean_diff,190939.0,0.18209362030029297,1,20260715
+linear_gaussian,full_traffic,genetic_strata_ab+sklearn_cupac_A+stratified_mean_diff,361865.0,0.34510135650634766,1,20260715
+linear_gaussian,full_traffic,genetic_strata_ab+sklearn_cupac_A_plus_B_plus_C+stratified_mean_diff,623731.0,0.5948362350463867,1,20260715

@@ -19,6 +19,7 @@ from varwar.estimators import (
     DifferenceInMeansEstimator,
     EnergyDistanceTestEstimator,
     HypExABTestEstimator,
+    HypExCupacEstimator,
     KSTestEstimator,
     MLRateEstimator,
     NearestNeighborMatchingEstimator,
@@ -183,6 +184,29 @@ class EstimatorTests(unittest.TestCase):
         result = HypExABTestEstimator(backend=backend).estimate(data, ExperimentSpec())
         self.assertEqual(result.estimator, "hypex_ab")
         self.assertEqual(result.diagnostics["backend"], "external_hypex")
+
+    def test_pypi_hypex_cupac_uses_adjusted_target_row(self) -> None:
+        try:
+            import hypex  # noqa: F401
+        except ImportError:
+            self.skipTest("PyPI HypEx is not installed in this runtime")
+
+        config = SyntheticConfig(n=1200, effect=0.25, seed=101)
+        data = generate_synthetic_ab(config)
+        spec = ExperimentSpec(
+            pre_target_col="y_pre",
+            pre_treatment_cols=("y_pre", "x1", "x2"),
+        )
+        raw = HypExABTestEstimator(prefer_pypi=True).estimate(data, spec)
+        adjusted = HypExCupacEstimator(
+            cupac_features=("y_pre", "x1", "x2"),
+            prefer_pypi=True,
+        ).estimate(data, spec)
+
+        self.assertEqual(adjusted.diagnostics["backend"], "pypi_hypex")
+        self.assertEqual(adjusted.diagnostics["variance_reduction"], "cupac")
+        self.assertNotAlmostEqual(adjusted.effect, raw.effect, places=10)
+        self.assertLess(adjusted.standard_error, raw.standard_error)
 
     def test_placeholder_is_explicit(self) -> None:
         placeholder = PlaceholderEstimator("unknown", "needs research")

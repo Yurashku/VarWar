@@ -30,8 +30,8 @@ runner, composable estimator wrappers, synthetic data generation, and tests.
   feature-set variants.
 - `hypex_cupac` reference/parity slot.
 - KS two-sample test, randomized/hedgehog t-test, and permutation mean test.
-- Genetic reduction of atomic strata with A/B-proportional and Neyman
-  objectives, plus target-free numeric feature binning.
+- Genetic reduction of atomic strata with the A/B-proportional objective,
+  plus target-free numeric feature binning.
 - Fast histogram KS approximation and one-dimensional energy-distance test.
 - Regression adjustment with HC1 standard error.
 - ML-rate-style cross-fitted ridge adjustment.

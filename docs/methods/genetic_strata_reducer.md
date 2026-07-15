@@ -3,7 +3,7 @@
 | Поле | Значение |
 | --- | --- |
 | ID / категория | `genetic_strata_reducer` / `DesignPreprocessor` |
-| Статус | Реализован: A/B objective, Neyman objective, fit/transform, holdout diagnostics |
+| Статус | Реализован: A/B objective, fit/transform, holdout diagnostics |
 | Вход | Категориальные ключи и historical/pre-experiment target |
 | Выход | Mapping, macro summaries, fitness, convergence history и diagnostics |
 | Estimand | Отсутствует; reducer готовит design для следующего estimator |
@@ -60,38 +60,6 @@ Var(\hat\tau)\approx\frac{J_{AB}}{n p(1-p)}.
 
 Это основной режим `ABProportionalVarianceObjective`.
 
-## Objective Неймана
-
-При возможности выбирать число наблюдений из каждой макростраты непрерывный
-оптимум имеет вид:
-
-\[
-n_g\propto N_gS_g.
-\]
-
-`NeymanVarianceObjective` оценивает фактическую integer allocation. Она имеет
-точную сумму `sample_size`, нижнюю границу `min_sample_per_stratum` и cap
-`n_g <= N_g`. Сначала решается bounded continuous allocation, затем остаток
-распределяется по максимальному marginal variance decrease. Стоимость
-`O(U log U)`, а не `O(sample_size)`.
-
-При finite population correction fitness равен:
-
-\[
-J_N=\frac{1}{N^2}\sum_g N_g^2
-\left(1-\frac{n_g}{N_g}\right)\frac{S_g^2}{n_g}.
-\]
-
-В diagnostics сохраняется continuous lower bound, но GA оптимизирует integer
-fitness.
-
-В `run_stratification_race` строки с Neyman objective применяют рассчитанные
-квоты к экспериментальным данным случайной выборкой только по stratum. Target
-и treatment при выборе строк не читаются. Если наблюдаемая страта не может
-заполнить квоту, pipeline явно завершается ошибкой вместо изменения design.
-Итоговый stratified estimator использует population weights `N_g/N` из
-reference summary, а не диспропорциональные sample shares `n_g/n`.
-
 ## Grouping genetic algorithm
 
 ```text
@@ -127,7 +95,7 @@ spec = spec.with_stratum("stratum")
 ```
 
 Если атомарные статистики уже рассчитаны, их можно переиспользовать между
-несколькими objective и seed без повторного прохода по исходным строкам:
+несколькими seed без повторного прохода по исходным строкам:
 
 ```python
 from varwar import AtomicStrataSummary
@@ -136,8 +104,8 @@ summary = AtomicStrataSummary.from_frame(history, category_cols, "y_pre")
 reducer.fit_summary(summary)
 ```
 
-`mapping_` можно сохранить как Parquet. `macro_summary_` содержит count, mean,
-variance и, в режиме Неймана, allocation. `result_` содержит историю
+`mapping_` можно сохранить как Parquet. `macro_summary_` содержит count, mean и
+variance. `result_` содержит историю
 сходимости, train/validation score и число фактических fitness evaluations.
 
 ## Неизвестные комбинации
@@ -153,4 +121,7 @@ R&D race использует этот fallback явно, потому что р
 - Historical target должен быть информативен для будущего outcome.
 - Малые или дрейфующие макростраты могут быть непригодны для inference даже при
   хорошем historical fitness.
+
+Архивный прототип allocation Неймана вынесен в `legacy/neyman/` и не относится
+к активному API или текущей гонке.
 - Несколько target metrics пока не объединяются в один multi-objective score.

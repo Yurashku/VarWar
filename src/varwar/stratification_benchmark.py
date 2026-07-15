@@ -20,7 +20,6 @@ from varwar.stratification import (
     ABProportionalVarianceObjective,
     AtomicStrataSummary,
     GeneticStrataReducer,
-    NeymanVarianceObjective,
     aggregate_atomic_strata,
 )
 from varwar.transforms import CupedTransformer, LinearCupacTransformer
@@ -132,30 +131,6 @@ def _mapping_validation_score(
         return math.nan, str(exc)
 
 
-def _sample_to_neyman_allocation(
-    data: pd.DataFrame,
-    stratum_col: str,
-    macro_summary: pd.DataFrame,
-    random_state: int,
-) -> pd.DataFrame:
-    if "allocation" not in macro_summary:
-        return data
-    strata = np.asarray(data[stratum_col].astype(int), dtype=np.int32)
-    rng = np.random.default_rng(random_state)
-    selected: list[np.ndarray] = []
-    for row in macro_summary.itertuples(index=False):
-        candidates = np.flatnonzero(strata == int(row.stratum))
-        quota = int(row.allocation)
-        if candidates.size < quota:
-            raise ValueError(
-                f"Experiment stratum {int(row.stratum)} has {candidates.size} rows "
-                f"but Neyman allocation requires {quota}."
-            )
-        selected.append(rng.choice(candidates, size=quota, replace=False))
-    positions = np.sort(np.concatenate(selected))
-    return data.iloc[positions].copy(deep=False)
-
-
 def _estimate_row(
     pipeline: str,
     preprocessor: str,
@@ -174,6 +149,8 @@ def _estimate_row(
                 spec,
                 auxiliary_data=reference_data,
             )
+        elif callable(getattr(estimator, "estimate_with_auxiliary", None)):
+            result = estimator.estimate_with_auxiliary(data, spec, reference_data)
         else:
             result = estimator.estimate(data, spec)
         row = result.to_record()
@@ -203,7 +180,6 @@ def run_stratification_race(
     category_cols: tuple[str, ...],
     reference_target_col: str,
     n_strata: int,
-    neyman_sample_size: int | None = None,
     reducers: Mapping[str, GeneticStrataReducer] | None = None,
     include_target_transformers: bool = True,
     measure_memory: bool = False,
@@ -330,31 +306,12 @@ def run_stratification_race(
         rows.append(row)
 
     if reducers is None:
-        if neyman_sample_size is None:
-            lower = min(reference_data.shape[0], max(2 * n_strata, 1))
-            neyman_sample_size = min(
-                reference_data.shape[0],
-                max(lower, int(round(reference_data.shape[0] * 0.2))),
-            )
         reducers = {
             "genetic_strata_ab": GeneticStrataReducer(
                 category_cols=category_cols,
                 reference_target_col=reference_target_col,
                 n_strata=n_strata,
                 objective=ABProportionalVarianceObjective(),
-                population_size=32,
-                max_generations=80,
-                elite_size=4,
-                patience=15,
-                random_state=random_state,
-                unknown_policy="largest",
-                output_col=output_col,
-            ),
-            "genetic_strata_neyman": GeneticStrataReducer(
-                category_cols=category_cols,
-                reference_target_col=reference_target_col,
-                n_strata=n_strata,
-                objective=NeymanVarianceObjective(sample_size=neyman_sample_size),
                 population_size=32,
                 max_generations=80,
                 elite_size=4,
@@ -373,12 +330,6 @@ def run_stratification_race(
         try:
             reducer.fit(reference_data, validation_data=validation_data)
             prepared = reducer.augment(data)
-            prepared = _sample_to_neyman_allocation(
-                prepared,
-                output_col,
-                reducer.macro_summary_,
-                random_state,
-            )
             fit_error = None
         except Exception as exc:
             prepared = None
@@ -413,15 +364,13 @@ def run_stratification_race(
             "generations_run": reducer.result_.generations_run,
             "converged": reducer.result_.converged,
             "analysis_rows": len(prepared),
-            "neyman_allocation_applied": "allocation" in reducer.macro_summary_,
         }
         stratum_weights = None
-        if "allocation" in reducer.macro_summary_:
-            total_reference = float(reducer.macro_summary_["count"].sum())
-            stratum_weights = {
-                int(row.stratum): float(row.count / total_reference)
-                for row in reducer.macro_summary_.itertuples(index=False)
-            }
+        total_reference = float(reducer.macro_summary_["count"].sum())
+        stratum_weights = {
+            int(row.stratum): float(row.count / total_reference)
+            for row in reducer.macro_summary_.itertuples(index=False)
+        }
 
         def stratified_estimator() -> StratifiedDifferenceInMeansEstimator:
             return StratifiedDifferenceInMeansEstimator(stratum_weights=stratum_weights)

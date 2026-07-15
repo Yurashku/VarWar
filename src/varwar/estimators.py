@@ -297,9 +297,9 @@ class MLRateEstimator:
 class HypExABTestEstimator(DifferenceInMeansEstimator):
     """Race slot for the HypEx A/B baseline.
 
-    The public HypEx API is not available in this workspace. This adapter uses
-    the same estimand and Welch inference natively, and can delegate to an
-    injected backend when the internal HypEx callable is available.
+    The adapter prefers the public PyPI HypEx API. If the optional backend is
+    unavailable, it falls back to the same estimand and Welch inference
+    implemented locally. A project-specific callable can also be injected.
     """
 
     def __init__(
@@ -370,13 +370,25 @@ class HypExABTestEstimator(DifferenceInMeansEstimator):
 class HypExCupacEstimator:
     name: str = "hypex_cupac"
     cupac_features: tuple[str, ...] | None = None
+    prefer_pypi: bool = True
 
     def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
+        return self.estimate_with_auxiliary(data, spec, auxiliary_data=None)
+
+    def estimate_with_auxiliary(
+        self,
+        data: pd.DataFrame,
+        spec: ExperimentSpec,
+        auxiliary_data: pd.DataFrame | None,
+    ) -> EstimateResult:
         features = self.cupac_features or spec.pre_treatment_features()
         try:
+            if not self.prefer_pypi:
+                raise HypExBackendUnavailable("pypi backend disabled")
             result = estimate_with_hypex_abtest(
                 data,
                 spec,
+                auxiliary_data=auxiliary_data,
                 cupac_features={spec.target_col: list(features)},
             )
             return EstimateResult(
@@ -391,7 +403,7 @@ class HypExCupacEstimator:
                 n_treatment=result.n_treatment,
                 diagnostics={
                     **result.diagnostics,
-                    "reference_only": True,
+                    "pre_experiment_only": True,
                     "cupac_features": ",".join(features),
                 },
             )
@@ -403,7 +415,7 @@ class HypExCupacEstimator:
                 LinearCupacTransformer(feature_cols=features, name="cupac_hypex_reference"),
                 HypExABTestEstimator(prefer_pypi=False),
                 name=self.name,
-            ).estimate(data, spec)
+            ).estimate(data, spec, auxiliary_data=auxiliary_data)
             return EstimateResult(
                 estimator=self.name,
                 effect=local.effect,
