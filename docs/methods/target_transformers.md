@@ -11,6 +11,8 @@ target и передаёт его базовому estimator через `Wrapped
 | `sklearn_cupac_A_plus_B` | A + safe in-time B → adjusted target | Historical/reference controls | Зависит от модели | Реализован; B задаётся экспертной политикой |
 | `sklearn_cupac_A_plus_B_plus_C` | A+B + balance-gated C → adjusted target | Historical/reference controls | Зависит от модели | Реализован; C требует заранее заданного gate |
 | `winsorized` | Target → clipped target | Reference quantiles | `O(N log N)` | Реализован; меняет estimand |
+| `nonlinear_cupac` | Target + features → adjusted target | Только независимые historical/reference outcomes | Зависит от модели | Заглушка: отобран кандидат R&D |
+| `bayesian_cupac` | Target + posterior prediction → adjusted target | Требует отдельного контракта | Зависит от модели | Заглушка: нужна формализация |
 
 ## CUPED
 
@@ -38,6 +40,23 @@ Feature sets имеют явную политику безопасности:
 - A+B: A и экспертно безопасные in-time признаки;
 - A+B+C: дополнительно признаки, прошедшие balance gate;
 - unsafe demo: только для демонстрации leakage, opt-in.
+
+## Нелинейный CUPAC: кандидат
+
+ID: `nonlinear_cupac`. Категория: `TargetTransformer`. Статус: заглушка,
+исполняемого алгоритма пока нет.
+
+Предполагаемый метод обучает нелинейную prognostic-модель
+`m(X) ≈ E[Y|X]` только на независимых historical/reference outcomes. В
+эксперименте он применяет центрированную control-variate коррекцию по прогнозу
+`m(X)`. Кандидат полезен, когда связь pre-treatment features с outcome заметно
+нелинейна и `cupac_linear` недообъясняет шум.
+
+Перед реализацией необходимо зафиксировать model API, модель по умолчанию,
+ограничения памяти и runtime, tuning protocol, обработку missing values и схему
+честной оценки. Подбор модели или гиперпараметров по outcome анализируемого
+эксперимента запрещён. В обычную гонку метод не включён до появления реализации
+и тестов на bias, FPR и power.
 
 ## Winsorization
 

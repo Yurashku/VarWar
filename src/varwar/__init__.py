@@ -16,6 +16,13 @@ from varwar.core import (
     WrappedEstimator,
 )
 from varwar.feature_adapters import NumericFeatureBinner
+from varwar.method_catalog import (
+    MethodCategory,
+    MethodRecord,
+    MethodStatus,
+    get_method_record,
+    method_catalog,
+)
 from varwar.estimators import (
     ApproxKSTestEstimator,
     DifferenceInMeansEstimator,
@@ -37,6 +44,7 @@ from varwar.estimators import (
     WinsorizedMeanEstimator,
 )
 from varwar.transforms import CupedTransformer, LinearCupacTransformer, WinsorizeTransformer
+from varwar.placeholders import PlaceholderDesignPreprocessor, PlaceholderTargetTransformer
 from varwar.stratification import (
     ABProportionalVarianceObjective,
     AtomicStrataSummary,
@@ -58,6 +66,13 @@ __all__ = [
     "DesignPreprocessor",
     "WrappedEstimator",
     "NumericFeatureBinner",
+    "MethodCategory",
+    "MethodRecord",
+    "MethodStatus",
+    "method_catalog",
+    "get_method_record",
+    "PlaceholderTargetTransformer",
+    "PlaceholderDesignPreprocessor",
     "ABProportionalVarianceObjective",
     "AtomicStrataSummary",
     "GeneticStrataReducer",

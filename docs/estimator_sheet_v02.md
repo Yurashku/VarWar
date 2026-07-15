@@ -28,8 +28,10 @@ Source: second worksheet, `Estimators V02`, from the user-provided workbook
 | 22 | CUPAC on pretreatment features C0 | `sklearn_cupac_A+hypex_ab`, `hypex_cupac` reference |
 | 23 | CUPAC on pretreatment features C0 + C1 | `sklearn_cupac_A_plus_B+hypex_ab` |
 | 24 | CUPAC on pretreatment features C0 + C1 + C2 | `sklearn_cupac_A_plus_B_plus_C+hypex_ab` |
-| 25 | Bayesian CUPAC | placeholder: `bayesian_cupac` |
+| 25 | Bayesian CUPAC | `TargetTransformer` placeholder: `bayesian_cupac` |
 
 The worksheet is preserved as a historical requirements mapping. Current
 method categories and behavior are documented in
 [`methods/README.md`](methods/README.md).
+The full implementation-status list is
+[`methods/all_methods.md`](methods/all_methods.md).

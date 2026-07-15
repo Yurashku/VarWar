@@ -29,7 +29,8 @@ benchmarks, composable estimators, and agent-facing instructions.
   variance objectives.
 - Honest placeholders for methods that need a separate implementation pass:
   anti-nuclear KS, HypEx matcher, calibration/reweighting,
-  optimal-transport matching, and Bayesian CUPAC.
+  optimal-transport matching, Bayesian CUPAC, nonlinear CUPAC, and
+  prognostic-score block randomization.
 
 ## Quick Start
 
@@ -70,7 +71,8 @@ A/B baseline into new race participants without duplicating inference code.
 
 Design preprocessing is evaluated in a separate race because it changes the
 experiment design rather than directly estimating an effect. See
-`docs/methods/README.md` for the complete taxonomy.
+`docs/methods/README.md` for the taxonomy and `docs/methods/all_methods.md` for
+the complete method/status registry.
 
 The current `hypex_ab` implementation is a native compatibility adapter for the
 HypEx A/B baseline slot. It first tries the PyPI `hypex` package, then falls

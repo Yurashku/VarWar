@@ -21,6 +21,28 @@ runtime и память поиска зависят от `H`, а не от чи�
 
 Полное описание: [genetic_strata_reducer.md](genetic_strata_reducer.md).
 
+## Prognostic-score block randomization: кандидат
+
+| Поле | Значение |
+| --- | --- |
+| ID / категория | `prognostic_score_block_randomization` / `DesignPreprocessor` |
+| Вход / выход | Historical model + pre-treatment features экспериментальных единиц → randomized assignment |
+| Цель | Снизить случайный дисбаланс по прогнозу baseline outcome до наблюдения экспериментального outcome |
+| Период данных | Model fit только на historical/pre-experiment outcomes |
+| Статус | Заглушка: отобран кандидат R&D, исполняемого алгоритма нет |
+| Ограничения | Только prospective design; для уже назначенных групп неприменим |
+
+Предполагаемая постановка: обучить prognostic-модель на истории, получить score
+для будущих единиц, сформировать малые блоки близких score и **случайно** назначить
+treatment внутри каждого блока с заданной allocation ratio. Детерминированное
+чередование не используется, потому что метод должен сохранять известный
+randomization mechanism.
+
+До реализации нужно определить размер и остаточную политику блоков, поддержку
+несимметричных allocation ratios и clusters, seed contract, balance diagnostics
+и randomization-aware inference. Кандидат должен участвовать в отдельной гонке
+design pipelines, а не в `run_estimator_race`.
+
 ## Почему это не estimator
 
 Один reducer можно соединить со stratified mean, CUPED + stratified mean,

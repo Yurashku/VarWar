@@ -24,3 +24,4 @@ When working autonomously:
 4. Keep placeholder methods explicit and searchable.
 5. Preserve memory/runtime discipline. Do not introduce bootstrap, CV, or
    model-heavy defaults unless the benchmark config opts into them.
+6. Keep `src/varwar/method_catalog.py` and `docs/methods/all_methods.md` in sync.

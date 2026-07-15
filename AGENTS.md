@@ -24,6 +24,10 @@ compared on synthetic data now and on internal real data later.
 - Keep estimators, target transformers, design preprocessors, feature adapters,
   inference corrections, and composite pipelines distinct in public APIs and
   benchmark output.
+- Keep every public method ID and maturity status in `varwar.method_catalog`.
+  Update `docs/methods/all_methods.md` in the same change.
+- Use category-specific non-executable placeholders. Never register a target
+  transformer or design preprocessor as an estimator merely to expose its name.
 
 ## Architecture
 
