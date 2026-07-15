@@ -31,6 +31,11 @@ class ExperimentSpec:
     def with_target(self, target_col: str) -> "ExperimentSpec":
         return replace(self, target_col=target_col)
 
+    def with_stratum(self, stratum_col: str) -> "ExperimentSpec":
+        """Return a copy configured to use ``stratum_col`` for stratified inference."""
+
+        return replace(self, stratum_col=stratum_col)
+
     def pre_treatment_features(self) -> tuple[str, ...]:
         if self.pre_treatment_cols:
             return self.pre_treatment_cols
@@ -85,6 +90,36 @@ class TargetTransformer(Protocol):
         spec: ExperimentSpec,
         auxiliary_data: pd.DataFrame | None = None,
     ) -> pd.Series:
+        ...
+
+    def diagnostics(self) -> Mapping[str, Any]:
+        ...
+
+
+class FeatureAdapter(Protocol):
+    """Target-free conversion of reference features into a reusable representation."""
+
+    def fit(self, reference_data: pd.DataFrame) -> "FeatureAdapter":
+        ...
+
+    def transform(self, data: pd.DataFrame) -> pd.DataFrame:
+        ...
+
+    def diagnostics(self) -> Mapping[str, Any]:
+        ...
+
+
+class DesignPreprocessor(Protocol):
+    """Experiment-design preparation fitted only on reference data."""
+
+    def fit(
+        self,
+        reference_data: pd.DataFrame,
+        validation_data: pd.DataFrame | None = None,
+    ) -> "DesignPreprocessor":
+        ...
+
+    def transform(self, data: pd.DataFrame) -> pd.Series:
         ...
 
     def diagnostics(self) -> Mapping[str, Any]:

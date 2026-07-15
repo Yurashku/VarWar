@@ -1,7 +1,21 @@
 """VarWar estimator R&D toolkit."""
 
-from varwar.benchmark import build_default_race, run_estimator_race
-from varwar.core import ExperimentSpec, EstimateResult, WrappedEstimator
+from varwar.benchmark import (
+    build_default_race,
+    run_estimator_race,
+    run_stratification_race,
+    summarize_stratification_trials,
+)
+from varwar.core import (
+    DesignPreprocessor,
+    Estimator,
+    ExperimentSpec,
+    EstimateResult,
+    FeatureAdapter,
+    TargetTransformer,
+    WrappedEstimator,
+)
+from varwar.feature_adapters import NumericFeatureBinner
 from varwar.estimators import (
     ApproxKSTestEstimator,
     DifferenceInMeansEstimator,
@@ -23,11 +37,36 @@ from varwar.estimators import (
     WinsorizedMeanEstimator,
 )
 from varwar.transforms import CupedTransformer, LinearCupacTransformer, WinsorizeTransformer
+from varwar.stratification import (
+    ABProportionalVarianceObjective,
+    AtomicStrataSummary,
+    GeneticStrataReducer,
+    NeymanVarianceObjective,
+    ObjectiveEvaluation,
+    StrataReductionResult,
+    StratificationObjective,
+    aggregate_atomic_strata,
+    canonicalize_partition,
+)
 
 __all__ = [
     "ExperimentSpec",
     "EstimateResult",
+    "Estimator",
+    "TargetTransformer",
+    "FeatureAdapter",
+    "DesignPreprocessor",
     "WrappedEstimator",
+    "NumericFeatureBinner",
+    "ABProportionalVarianceObjective",
+    "AtomicStrataSummary",
+    "GeneticStrataReducer",
+    "NeymanVarianceObjective",
+    "ObjectiveEvaluation",
+    "StrataReductionResult",
+    "StratificationObjective",
+    "aggregate_atomic_strata",
+    "canonicalize_partition",
     "ApproxKSTestEstimator",
     "DifferenceInMeansEstimator",
     "EnergyDistanceTestEstimator",
@@ -51,4 +90,6 @@ __all__ = [
     "WinsorizeTransformer",
     "build_default_race",
     "run_estimator_race",
+    "run_stratification_race",
+    "summarize_stratification_trials",
 ]

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from varwar.core import EstimateResult, ExperimentSpec
+from varwar.stats import t_critical
 
 
 class HypExBackendUnavailable(RuntimeError):
@@ -62,14 +65,27 @@ def estimate_with_hypex_abtest(
         row = _select_target_row(resume_df, spec.target_col)
         effect = _first_present(row, ["difference", "Difference", "mean difference"])
         p_value = _first_present(row, ["TTest p-value 1", "TTest p-value", "p-value"])
-        n_control = int(_first_present(row, ["control size", "control_size"], default=0))
-        n_treatment = int(_first_present(row, ["test size", "test_size"], default=0))
-        se = _derive_se(row, effect)
-        statistic = _first_present(
-            row,
-            ["TTest statistic 1", "TTest statistic", "statistic"],
-            default=float("nan"),
-        )
+        n_control, n_treatment, raw_se, df = _group_statistics(data, spec)
+        variance_reduced = bool(cuped_features or cupac_features)
+        if variance_reduced:
+            statistic, se = _infer_statistic_and_se(effect, p_value, df)
+            se_source = "p_value_inversion"
+        else:
+            se = raw_se
+            statistic = effect / se if se > 0.0 else float("nan")
+            se_source = "welch_group_variance"
+        critical = t_critical(spec.alpha, df)
+        ci_low = float(effect - critical * se) if math.isfinite(se) else float("nan")
+        ci_high = float(effect + critical * se) if math.isfinite(se) else float("nan")
+        diagnostics = {
+            "backend": "pypi_hypex",
+            "standard_error_source": se_source,
+            "degrees_of_freedom": df,
+        }
+        if variance_reduced:
+            diagnostics["variance_reduction"] = (
+                "cupac" if cupac_features else "cuped"
+            )
     except HypExBackendUnavailable:
         raise
     except Exception as exc:  # pragma: no cover - depends on optional install/API
@@ -80,11 +96,11 @@ def estimate_with_hypex_abtest(
         standard_error=se,
         statistic=float(statistic),
         p_value=float(p_value),
-        ci_low=float("nan"),
-        ci_high=float("nan"),
+        ci_low=ci_low,
+        ci_high=ci_high,
         n_control=n_control,
         n_treatment=n_treatment,
-        diagnostics={"backend": "pypi_hypex"},
+        diagnostics=diagnostics,
     )
 
 
@@ -107,12 +123,46 @@ def _first_present(row: pd.Series, names: list[str], default: float | None = Non
     raise HypExBackendUnavailable(f"HypEx ABTest output lacks columns: {names}")
 
 
-def _derive_se(row: pd.Series, effect: float) -> float:
-    statistic = _first_present(
-        row,
-        ["TTest statistic 1", "TTest statistic", "statistic"],
-        default=float("nan"),
+def _group_statistics(
+    data: pd.DataFrame,
+    spec: ExperimentSpec,
+) -> tuple[int, int, float, float]:
+    target = np.asarray(pd.to_numeric(data[spec.target_col], errors="coerce"), dtype=float)
+    treatment = np.asarray(data[spec.treatment_col])
+    control = target[np.isfinite(target) & (treatment == spec.control_value)]
+    treated = target[np.isfinite(target) & (treatment == spec.treatment_value)]
+    if control.size < 2 or treated.size < 2:
+        raise HypExBackendUnavailable("Both HypEx groups need at least two finite targets.")
+    variance_control = float(control.var(ddof=1))
+    variance_treated = float(treated.var(ddof=1))
+    term_control = variance_control / control.size
+    term_treated = variance_treated / treated.size
+    standard_error = math.sqrt(term_control + term_treated)
+    denominator = (
+        term_control**2 / (control.size - 1)
+        + term_treated**2 / (treated.size - 1)
     )
-    if statistic and pd.notna(statistic):
-        return abs(float(effect) / float(statistic))
-    return float("nan")
+    degrees_of_freedom = (
+        (term_control + term_treated) ** 2 / denominator
+        if denominator > 0.0
+        else float(control.size + treated.size - 2)
+    )
+    return int(control.size), int(treated.size), standard_error, degrees_of_freedom
+
+
+def _infer_statistic_and_se(
+    effect: float,
+    p_value: float,
+    degrees_of_freedom: float,
+) -> tuple[float, float]:
+    try:
+        from scipy import stats as scipy_stats  # type: ignore
+
+        magnitude = float(scipy_stats.t.isf(p_value / 2.0, degrees_of_freedom))
+        statistic = math.copysign(magnitude, effect)
+        standard_error = abs(effect / statistic) if statistic != 0.0 else float("nan")
+        return statistic, standard_error
+    except Exception as exc:
+        raise HypExBackendUnavailable(
+            "Cannot derive variance-reduced standard error from HypEx p-value."
+        ) from exc

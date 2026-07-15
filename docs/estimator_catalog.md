@@ -1,16 +1,19 @@
 # Estimator Catalog
 
+This is a compact compatibility index. The current taxonomy and method
+documentation live in [`methods/README.md`](methods/README.md).
+
 ## Ready
 
 | Name | Type | Notes |
 | --- | --- | --- |
-| `hypex_ab` | baseline | PyPI `hypex` AB baseline when installed, native-compatible fallback otherwise. |
-| `welch_mean_diff` | estimator | Difference in means with Welch standard error. |
+| `welch_mean_diff` | canonical baseline | Difference in means with Welch standard error. |
+| `hypex_ab` | integration baseline | PyPI `hypex` AB baseline when installed, native-compatible fallback otherwise. |
 | `pooled_mean_diff` | estimator | Difference in means with pooled variance. |
 | `ks_test` | test | Two-sample KS statistic; SciPy when available, asymptotic fallback otherwise. |
 | `approx_ks_fast` | test | Histogram/sketch approximation of KS for large sweeps. |
 | `energy_test` | test | One-dimensional energy-distance two-sample test with permutation p-value. |
-| `randomized_t_test` | test | HSE randomized/hedgehog t-statistic, reimplemented from the statistic definition. |
+| `randomized_t_test` | test | Randomized/hedgehog weighted t-statistic with deterministic weights. |
 | `permutation_mean_test` | test | Memory-bounded randomization test for mean difference. |
 | `regression_adjustment` | estimator | OLS treatment coefficient with HC1 standard error. |
 | `ml_rate` | estimator | Cross-fitted ridge nuisance prediction followed by robust regression adjustment. |
@@ -31,6 +34,13 @@
 | `holm_bonferroni` | correction | Step-down Bonferroni helper. |
 | `romano_wolf_stepdown` | correction | Step-down max-statistic correction over caller-supplied bootstrap statistics. |
 
+## Design Preprocessors
+
+| Name | Type | Notes |
+| --- | --- | --- |
+| `genetic_strata_reducer` | design preprocessor | Reduces atomic categorical combinations to exactly `U` macrostrata using A/B-proportional or Neyman variance objectives. |
+| `numeric_feature_binner` | feature adapter | Learns fixed categorical bins for numeric features without using target values. |
+
 ## Placeholders
 
 | Name | Reason |
@@ -39,7 +49,6 @@
 | `hypex_matcher` | Requires internal HypEx matcher API and matching policy. |
 | `calibration_reweighting` | Needs constraints, calibration totals, and variance estimator policy. |
 | `optimal_transport_check` | Better treated as a distribution diagnostic before becoming an effect estimator. |
-| `genetic_algorithm_hse` | HSE code is not copied; needs a fresh optimization objective. |
 | `optimal_transport_matching` | Needs matching distance, regularization, and inference policy. |
 | `bayesian_cupac` | Needs Bayesian model and posterior decision rule. |
 
