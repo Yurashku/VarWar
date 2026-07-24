@@ -28,6 +28,25 @@ class PlaceholderTargetTransformer:
 
 
 @dataclass(frozen=True)
+class PlaceholderMetricTransformer:
+    """Неисполняемый кандидат преобразования исходной метрики."""
+
+    name: str
+    reason: str
+
+    def fit_transform(
+        self,
+        data: pd.DataFrame,
+        spec: ExperimentSpec,
+        auxiliary_data: pd.DataFrame | None = None,
+    ) -> pd.Series:
+        raise NotImplementedError(f"{self.name} is not implemented: {self.reason}")
+
+    def diagnostics(self) -> Mapping[str, Any]:
+        return {"status": "not_implemented", "reason": self.reason}
+
+
+@dataclass(frozen=True)
 class PlaceholderDesignPreprocessor:
     """Non-executable design candidate kept outside estimator races."""
 

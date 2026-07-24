@@ -24,6 +24,7 @@ from varwar.estimators import (
 from varwar.feature_sets import default_cupac_feature_sets
 from varwar.placeholders import (
     PlaceholderDesignPreprocessor,
+    PlaceholderMetricTransformer,
     PlaceholderTargetTransformer,
 )
 from varwar.transforms import CupedTransformer, LinearCupacTransformer, WinsorizeTransformer
@@ -33,19 +34,22 @@ def placeholder_estimators() -> list[PlaceholderEstimator]:
     return [
         PlaceholderEstimator(
             "anti_nuclear_ks_test",
-            "table name is unclear; needs a mathematical definition",
+            "needs a treatment-blind de-tying rule, scale rule, and "
+            "permutation-calibrated null distribution",
         ),
         PlaceholderEstimator(
             "hypex_matcher",
-            "requires the internal HypEx matcher API and matching policy",
+            "overlaps the local ATT matcher until estimand, distance, "
+            "replacement, and parity rules are fixed",
         ),
         PlaceholderEstimator(
             "calibration_reweighting",
-            "requires calibration totals, constraints, and variance policy",
+            "requires external population totals, calibration constraints, "
+            "target population, and variance policy",
         ),
         PlaceholderEstimator(
             "optimal_transport_check",
-            "currently a distribution diagnostic, not an effect estimator",
+            "excluded because no unique statistic or decision rule is defined",
         ),
         PlaceholderEstimator(
             "optimal_transport_matching",
@@ -67,6 +71,28 @@ def placeholder_target_transformers() -> list[PlaceholderTargetTransformer]:
             "needs an honest reference-fit model contract, tuning policy, and "
             "resource-bounded model family",
         ),
+        PlaceholderTargetTransformer(
+            "robust_cuped",
+            "needs a robust coefficient estimator, centering policy, "
+            "honest fit contract, and valid inference tests",
+        ),
+        PlaceholderTargetTransformer(
+            "trimming",
+            "needs reference thresholds plus an explicit row-filtering and "
+            "missing-row inference contract",
+        ),
+    ]
+
+
+def placeholder_metric_transformers() -> list[PlaceholderMetricTransformer]:
+    """Return non-executable transformations of source metric definitions."""
+
+    return [
+        PlaceholderMetricTransformer(
+            "ratio_linearization",
+            "needs a reference ratio, scale restoration rule, and a contract "
+            "for composition with target transformers and base estimators",
+        )
     ]
 
 

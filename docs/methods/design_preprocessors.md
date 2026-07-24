@@ -1,51 +1,24 @@
 # Предобработка дизайна
 
-`DesignPreprocessor` формирует структуру эксперимента до статистического
-вывода. Он не возвращает effect, standard error или p-value.
+`DesignPreprocessor` подготавливает эксперимент до итогового оценивания. Он
+может строить выборку, блоки, страты, mapping или назначение treatment, но не
+обязан выполнять все эти действия сразу.
 
-## Genetic strata reducer
+| ID | Что делает | Использует target | Статус |
+| --- | --- | --- | --- |
+| `atomic_strata` | Оставляет все комбинации категорий отдельными стратами | только historical target для диагностики | baseline |
+| `random_reduction` | Случайно объединяет атомарные страты | нет при transform | baseline |
+| `mean_sorted_reduction` | Объединяет атомарные страты, отсортированные по historical mean | только historical target | baseline |
+| `genetic_strata_reducer` | Оптимизирует объединение атомарных страт | только historical/reference target | реализован |
+| `prognostic_score_block_randomization` | Формирует блоки по честному прогнозу и рандомизирует внутри блоков | только historical/reference target | кандидат |
 
-| Поле | Значение |
-| --- | --- |
-| ID / категория | `genetic_strata_reducer` / `DesignPreprocessor` |
-| Вход / выход | Категории + historical target → frozen atom-to-macrostratum mapping |
-| Цель | Минимизировать `ab_proportional` variance objective |
-| Estimand | Отсутствует; его задаёт следующий estimator |
-| Период данных | Fit на historical/pre-experiment; transform не читает outcome |
-| Сложность | `O(N)` aggregation + примерно `O(PGH)` search |
-| Статус | A/B objective, fit/transform и holdout diagnostics реализованы и протестированы |
-| Ограничения | GA не гарантирует global optimum; неизвестные комбинации требуют явной policy |
+`ab_proportional` — не метод выбора A/B-групп. Это внутренняя целевая функция
+генетического алгоритма для естественного пропорционального трафика:
 
-`fit_summary()` переиспользует готовые атомарные статистики; после агрегации
-runtime и память поиска зависят от `H`, а не от числа исходных строк `N`.
+\[
+J=\sum_g\frac{N_g}{N}S_g^2.
+\]
 
-Полное описание: [genetic_strata_reducer.md](genetic_strata_reducer.md).
-
-## Prognostic-score block randomization: кандидат
-
-| Поле | Значение |
-| --- | --- |
-| ID / категория | `prognostic_score_block_randomization` / `DesignPreprocessor` |
-| Вход / выход | Historical model + pre-treatment features экспериментальных единиц → randomized assignment |
-| Цель | Снизить случайный дисбаланс по прогнозу baseline outcome до наблюдения экспериментального outcome |
-| Период данных | Model fit только на historical/pre-experiment outcomes |
-| Статус | Заглушка: отобран кандидат R&D, исполняемого алгоритма нет |
-| Ограничения | Только prospective design; для уже назначенных групп неприменим |
-
-Предполагаемая постановка: обучить prognostic-модель на истории, получить score
-для будущих единиц, сформировать малые блоки близких score и **случайно** назначить
-treatment внутри каждого блока с заданной allocation ratio. Детерминированное
-чередование не используется, потому что метод должен сохранять известный
-randomization mechanism.
-
-До реализации нужно определить размер и остаточную политику блоков, поддержку
-несимметричных allocation ratios и clusters, seed contract, balance diagnostics
-и randomization-aware inference. Кандидат должен участвовать в отдельной гонке
-design pipelines, а не в `run_estimator_race`.
-
-## Почему это не estimator
-
-Один reducer можно соединить со stratified mean, CUPED + stratified mean,
-CUPAC + stratified mean или другим estimator. Если записать GA как estimator,
-эта композиция потеряется, а runtime поиска будет ошибочно сравниваться с
-runtime статистической формулы.
+`genetic_strata_ab` — имя готового профиля гонки
+`genetic_strata_reducer(objective=ab_proportional)`, а не ещё один алгоритм.
+Режим Неймана перемещён в `legacy/neyman/` и не входит в активные R&D-прогоны.

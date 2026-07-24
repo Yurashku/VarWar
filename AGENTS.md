@@ -21,9 +21,10 @@ compared on synthetic data now and on internal real data later.
   and fixed seeds.
 - If an estimator is not understood well enough, add a documented placeholder
   instead of inventing a fake implementation.
-- Keep estimators, target transformers, design preprocessors, feature adapters,
-  inference corrections, and composite pipelines distinct in public APIs and
-  benchmark output.
+- Keep estimators, hypothesis tests, metric transformers, target transformers,
+  design preprocessors, feature adapters, inference corrections, configuration
+  profiles, optimization objectives, and composite pipelines distinct in public
+  APIs and benchmark output.
 - Keep every public method ID and maturity status in `varwar.method_catalog`.
   Update `docs/methods/all_methods.md` in the same change.
 - Use category-specific non-executable placeholders. Never register a target

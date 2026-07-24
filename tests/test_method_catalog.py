@@ -20,6 +20,7 @@ from varwar.registry import (
     default_estimators,
     placeholder_design_preprocessors,
     placeholder_estimators,
+    placeholder_metric_transformers,
     placeholder_target_transformers,
 )
 
@@ -44,6 +45,10 @@ class MethodCatalogTests(unittest.TestCase):
         )
         self.assertEqual(randomization.status, MethodStatus.PLACEHOLDER_RND)
 
+        ratio = get_method_record("ratio_linearization")
+        self.assertEqual(ratio.category, MethodCategory.METRIC_TRANSFORMER)
+        self.assertEqual(ratio.status, MethodStatus.PLACEHOLDER_RND)
+
     def test_all_placeholder_registries_are_non_executable_and_cataloged(self) -> None:
         data = pd.DataFrame({"treatment": [], "y": []})
         spec = ExperimentSpec()
@@ -66,6 +71,13 @@ class MethodCatalogTests(unittest.TestCase):
             self.assertFalse(record.is_implemented)
             with self.assertRaises(NotImplementedError):
                 placeholder.fit(data)
+
+        for placeholder in placeholder_metric_transformers():
+            record = get_method_record(placeholder.name)
+            self.assertEqual(record.category, MethodCategory.METRIC_TRANSFORMER)
+            self.assertFalse(record.is_implemented)
+            with self.assertRaises(NotImplementedError):
+                placeholder.fit_transform(data, spec)
 
     def test_markdown_registry_mentions_every_method_id(self) -> None:
         markdown = (ROOT / "docs" / "methods" / "all_methods.md").read_text(

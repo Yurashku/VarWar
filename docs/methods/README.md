@@ -1,38 +1,45 @@
 # Каталог методов VarWar
 
-Этот каталог разделяет статистические методы по роли в экспериментальном
-pipeline. Одинаковая терминология используется в коде, документации и R&D
-таблицах.
+Каталог разделяет статистические примитивы, настройки и готовые конвейеры.
+Сравнивать в одной гонке следует **итоговые конвейеры с одинаковой целевой
+величиной**, а не все классы, которые умеет вызвать библиотека.
 
-| Категория | Что делает | Контракт | Примеры |
-| --- | --- | --- | --- |
-| `Estimator` | Оценивает эффект или проверяет гипотезу | `estimate(data, spec)` | HypEx AB, Welch, stratified mean |
-| `TargetTransformer` | Меняет target перед оценкой | `fit_transform(data, spec, auxiliary_data)` | CUPED, CUPAC, winsorization |
-| `DesignPreprocessor` | Готовит дизайн или страты | `fit(reference); transform(experiment)` | `genetic_strata_reducer` |
-| `FeatureAdapter` | Меняет представление признаков без target | `fit(reference); transform(data)` | `numeric_feature_binner` |
-| `InferenceCorrection` | Корректирует множественный вывод | функция над p-values/statistics | Bonferroni, Romano-Wolf |
-| `CompositePipeline` | Соединяет совместимые компоненты | adapter → preprocessor → transformer → estimator | binning → GA → CUPED → stratified mean |
+| Категория | Что делает | Примеры |
+| --- | --- | --- |
+| `Estimator` | Оценивает эффект и строит статистический вывод | Welch, ML-RATE, стратифицированная оценка |
+| `HypothesisTest` | Проверяет гипотезу, но не обязан оценивать эффект | KS, energy test |
+| `MetricTransformer` | Преобразует исходное определение метрики | планируемая линеаризация ratio |
+| `TargetTransformer` | Меняет target перед оцениванием | CUPED, CUPAC, winsorization |
+| `FeatureAdapter` | Меняет представление признаков без использования target | `numeric_feature_binner` |
+| `DesignPreprocessor` | Готовит выборку, страты или схему назначения до анализа | `genetic_strata_reducer` |
+| `OptimizationObjective` | Задаёт внутреннюю целевую функцию алгоритма | `ab_proportional` |
+| `ConfigurationProfile` | Фиксирует интеграционный профиль без нового преобразования данных | будущий профиль HypEx matching |
+| `InferenceCorrection` | Корректирует множественный статистический вывод | Holm, Romano-Wolf |
+| `CompositePipeline` | Соединяет совместимые компоненты | CUPED → HypEx A/B |
+
+`DesignPreprocessor` не означает автоматически «разбить пользователей на A и
+B». Он может построить и заморозить страты, подготовить выборку, сформировать
+блоки или выполнить рандомизацию. Конкретный контракт зависит от компонента.
+
+CUPAC A, A+B и A+B+C считаются отдельными `TargetTransformer`-вариантами:
+алгоритмическое семейство у них общее, но зона допустимых признаков является
+частью публичного контракта и непосредственно меняет transformed target.
 
 ## Навигация
 
-- [Полный реестр методов и статусов](all_methods.md)
-- [Эстиматоры](estimators.md)
+- [Полный нумерованный реестр](all_methods.md)
+- [Оценивание эффекта и тесты](estimators.md)
 - [Трансформации target](target_transformers.md)
 - [Предобработка дизайна](design_preprocessors.md)
 - [Генетическое укрупнение страт](genetic_strata_reducer.md)
 - [Адаптеры признаков](feature_adapters.md)
 - [Коррекции статистического вывода](inference_corrections.md)
-- [Композиция pipeline](pipelines.md)
+- [Готовые конвейеры](pipelines.md)
 
 ## Правило безопасности данных
 
-`Estimator` видит экспериментальный outcome. `TargetTransformer` может
-использовать outcome в рамках явно определённой схемы fit. `DesignPreprocessor`
-и `FeatureAdapter` обучаются только на historical/pre-experiment данных и не
-имеют права подбирать параметры по экспериментальному outcome.
-
-`run_estimator_race` сравнивает эстиматоры и target transformations.
-`run_stratification_race` отдельно сравнивает design preprocessing pipelines,
-чтобы время обучения и качество разбиения не смешивались со временем inference.
-Точкой отсчёта без variance reduction является `welch_mean_diff`; HypEx строки
-остаются обязательными integration/parity baselines.
+Исторические признаки и target допустимы для обучения только в явно заданном
+reference-периоде. Post-treatment признаки не должны попадать в CUPED, CUPAC,
+стратификацию или подбор гиперпараметров без заранее зафиксированной и
+проверяемой политики. Изменение outcome текущего эксперимента не должно менять
+замороженную предобработку дизайна.

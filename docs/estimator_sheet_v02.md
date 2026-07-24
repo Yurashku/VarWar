@@ -1,5 +1,8 @@
 # Estimator Sheet V02 Mapping
 
+> Историческое сопоставление. Актуальная классификация и нумерация находятся в
+> [docs/methods/all_methods.md](methods/all_methods.md).
+
 Source: second worksheet, `Estimators V02`, from the user-provided workbook
 `C:/Users/ivan/Downloads/Estimators (1).xlsx`.
 
