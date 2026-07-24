@@ -51,7 +51,11 @@ from varwar.estimators import (
     WinsorizedMeanEstimator,
 )
 from varwar.transforms import CupedTransformer, LinearCupacTransformer, WinsorizeTransformer
-from varwar.placeholders import PlaceholderDesignPreprocessor, PlaceholderTargetTransformer
+from varwar.placeholders import (
+    PlaceholderDesignPreprocessor,
+    PlaceholderMetricTransformer,
+    PlaceholderTargetTransformer,
+)
 from varwar.stratification import (
     ABProportionalVarianceObjective,
     AtomicStrataSummary,
@@ -78,6 +82,7 @@ __all__ = [
     "method_catalog",
     "get_method_record",
     "PlaceholderTargetTransformer",
+    "PlaceholderMetricTransformer",
     "PlaceholderDesignPreprocessor",
     "SyntheticPipelineRaceConfig",
     "run_synthetic_pipeline_race",

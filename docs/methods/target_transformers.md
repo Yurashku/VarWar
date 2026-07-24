@@ -1,74 +1,110 @@
-# Трансформации target
+# Трансформации метрики и target
 
-`TargetTransformer` не является самостоятельным estimator. Он создаёт новый
-target и передаёт его базовому estimator через `WrappedEstimator`.
+`TargetTransformer` не оценивает эффект самостоятельно. Он формирует новый
+target, после чего запускается совместимый estimator. `MetricTransformer`
+работает ещё раньше: меняет исходное определение метрики.
 
-| ID | Вход и выход | Fit-период | Сложность | Статус и ограничение |
-| --- | --- | --- | --- | --- |
-| `cuped` | Target + одна covariate → adjusted target | Historical или явно заданный reference | `O(N)` | Реализован; covariate должна быть pre-treatment |
-| `cupac_linear` | Target + feature matrix → adjusted target | Historical/reference controls | `O(Nd²+d³)` | Реализован; линейная/ridge модель |
-| `sklearn_cupac_A` | Pre-treatment feature set A → adjusted target | Historical/reference controls | Зависит от модели | Реализован |
-| `sklearn_cupac_A_plus_B` | A + safe in-time B → adjusted target | Historical/reference controls | Зависит от модели | Реализован; B задаётся экспертной политикой |
-| `sklearn_cupac_A_plus_B_plus_C` | A+B + balance-gated C → adjusted target | Historical/reference controls | Зависит от модели | Реализован; C требует заранее заданного gate |
-| `winsorized` | Target → clipped target | Reference quantiles | `O(N log N)` | Реализован; меняет estimand |
-| `nonlinear_cupac` | Target + features → adjusted target | Только независимые historical/reference outcomes | Зависит от модели | Заглушка: отобран кандидат R&D |
-| `bayesian_cupac` | Target + posterior prediction → adjusted target | Требует отдельного контракта | Зависит от модели | Заглушка: нужна формализация |
+## CUPED в VarWar
 
-## CUPED
-
-ID: `cuped`. Категория: `TargetTransformer`.
-
-Использует одну pre-experiment covariate:
+ID: `cuped`. Реализация: `CupedTransformer`.
 
 \[
-Y^*=Y-\theta(X-E[X]),\qquad \theta=\frac{Cov(Y,X)}{Var(X)}.
+Y^*=Y-\theta(X-\bar X),\qquad
+\theta=\frac{\operatorname{Cov}(Y,X)}{\operatorname{Var}(X)}.
 \]
 
-При корректной pre-treatment covariate математическое ожидание эффекта не
-меняется, а variance может уменьшиться. Нулевая variance covariate приводит к
-`theta=0`, а не к делению на ноль.
+Обычно \(X\) — значение той же метрики до эксперимента, но это может быть любая
+заранее измеренная числовая ковариата. Модель машинного обучения не нужна.
+Если передан `auxiliary_data`, коэффициент и среднее обучаются на нём; иначе
+они оцениваются на всех переданных строках, а не только на control.
 
-## CUPAC
+При pre-treatment \(X\), одинаковом преобразовании обеих групп и корректном
+центрировании CUPED сохраняет исходный ATE в математическом ожидании. Оценивание
+коэффициента на том же эксперименте требует отдельной проверки конечновыборочного
+смещения и coverage; предпочтителен независимый historical/reference fit.
 
-ID: `cupac_linear` и RnD6-варианты `sklearn_cupac_A`,
-`sklearn_cupac_A_plus_B`, `sklearn_cupac_A_plus_B_plus_C`.
+Важно: `cuped+hypex_ab` использует **CUPED VarWar**, затем HypEx Welch A/B. Это
+не вызов нативного `hypex.CUPEDTransformer`.
 
-CUPAC строит прогноз target по набору признаков и центрированно вычитает его.
-Feature sets имеют явную политику безопасности:
+Нативный `hypex.CUPEDTransformer` из проверенного PyPI HypEx 1.0.6 также
+использует стандартный коэффициент `Cov(Y, X) / Var(X)`, но оценивает его на
+всех строках переданного `Dataset`: отдельной фильтрации только по control в
+этом transformer нет.
 
-- A: только pre-treatment признаки;
-- A+B: A и экспертно безопасные in-time признаки;
-- A+B+C: дополнительно признаки, прошедшие balance gate;
-- unsafe demo: только для демонстрации leakage, opt-in.
+## CUPAC в VarWar
 
-Референсный `hypex_cupac` использует временной контракт PyPI HypEx. Для target
-и каждого cofounder нужны два согласованных pre-experiment среза: `lag=2`
-служит обучающей выборкой для прогноза `lag=1`, а предсказание на `lag=1`
-корректирует target текущего эксперимента. В синтетическом генераторе такие
-колонки имеют суффикс `__lag2`. Текущий экспериментальный outcome не участвует
-в обучении prognostic-модели. Если временной контракт недоступен, адаптер явно
-переходит к локальному CUPAC, обученному на переданной historical-выборке, и
-записывает причину fallback в diagnostics.
+CUPAC использует прогноз \(m(X)\) как control variate. Отличие от CUPED не в
+самой идее вычитания шума, а в способе получить ковариату:
 
-## Нелинейный CUPAC: кандидат
+- CUPED обычно берёт один готовый pre-target;
+- CUPAC обучает прогностическую модель по набору признаков;
+- линейный CUPAC может быть близок к многомерному CUPED;
+- нелинейность зависит от выбранной модели, а не от названия CUPAC.
 
-ID: `nonlinear_cupac`. Категория: `TargetTransformer`. Статус: заглушка,
-исполняемого алгоритма пока нет.
+### Локальный линейный CUPAC
 
-Предполагаемый метод обучает нелинейную prognostic-модель
-`m(X) ≈ E[Y|X]` только на независимых historical/reference outcomes. В
-эксперименте он применяет центрированную control-variate коррекцию по прогнозу
-`m(X)`. Кандидат полезен, когда связь pre-treatment features с outcome заметно
-нелинейна и `cupac_linear` недообъясняет шум.
+ID: `cupac_linear`. Реализация обучает linear/ridge прогноз на
+`auxiliary_data`; без него по умолчанию использует control текущего набора.
+Затем центрированный прогноз вычитается с оценённым control-variate
+коэффициентом.
 
-Перед реализацией необходимо зафиксировать model API, модель по умолчанию,
-ограничения памяти и runtime, tuning protocol, обработку missing values и схему
-честной оценки. Подбор модели или гиперпараметров по outcome анализируемого
-эксперимента запрещён. В обычную гонку метод не включён до появления реализации
-и тестов на bias, FPR и power.
+### Интеграция HypEx CUPAC
 
-## Winsorization
+ID конвейера: `hypex_cupac`. Текущий адаптер VarWar явно задаёт
+`cupac_models="linear"`, поэтому эта строка **линейная**, не нелинейная.
 
-ID: `winsorized`. Значения target ограничиваются quantiles, обученными на
-reference data. Метод меняет estimand для тяжёлых хвостов, поэтому результат
-следует интерпретировать как эффект на winsorized metric.
+Для target и каждого временного признака нужны lag-1 и lag-2:
+
+1. lag-2 признаки и target используются для прогноза lag-1 target;
+2. модель обучается на исторических парах;
+3. lag-1 признаки и target подаются модели для прогноза текущего target;
+4. центрированный прогноз вычитается из текущего target;
+5. HypEx выполняет A/B-анализ.
+
+При `cupac_models=None` сам HypEx может выбирать среди linear, ridge, lasso и
+доступных нелинейных моделей. VarWar этого режима сейчас не использует.
+
+### Политики признаков A, A+B, A+B+C
+
+Это три первоклассных варианта одного алгоритмического семейства
+`cupac_linear`. Они реализуются одним эффективным движком, но считаются
+отдельными примитивами, потому что политика зон признаков входит в контракт и
+меняет transformed target:
+
+- `sklearn_cupac_A`: только pre-treatment признаки;
+- `sklearn_cupac_A_plus_B`: A и экспертно разрешённые безопасные in-time признаки;
+- `sklearn_cupac_A_plus_B_plus_C`: A+B и признаки, прошедшие заранее заданный balance gate.
+
+Они остаются отдельными строками и в каталоге примитивов, и на листе
+конвейеров. Создавать три копии линейной алгебры не нужно: различие задаётся
+неизменяемым `CupacFeatureSet`, а `LinearCupacTransformer` переиспользуется.
+
+## Робастные преобразования
+
+| ID | Смысл | Влияние на estimand | Статус |
+| --- | --- | --- | --- |
+| `winsorized` | Ограничить target reference-квантилями | меняет целевую метрику | реализован |
+| `trimming` | Удалить reference-заданные хвосты | меняет популяцию и метрику | заглушка |
+| `robust_cuped` | Робастно оценить CUPED-коэффициент | должен сохранять ATE при честном fit | кандидат R&D |
+| `nonlinear_cupac` | Нелинейно прогнозировать шум по pre-treatment признакам | должен сохранять ATE при честном fit | кандидат R&D |
+| `bayesian_cupac` | Байесовская прогностическая коррекция | пока не определено | низкоприоритетная заглушка |
+
+`robust_cuped` не следует называть общим «robust estimation»: это конкретный
+способ защитить коэффициент control variate от тяжёлых хвостов. Его преимущество
+не гарантировано и должно проверяться по bias, RMSE, FPR и power.
+
+## Ratio-метрики
+
+`ratio_delta` уже выполняет прямое оценивание ratio-of-means и строит
+delta-method inference; t-test поверх него не требуется.
+
+`ratio_linearization` — отдельный планируемый `MetricTransformer`. Он должен
+создать аддитивный пользовательский target, сохранить правило обратного
+масштабирования и затем позволить композицию:
+
+```text
+ratio linearization → CUPED/CUPAC → estimator
+```
+
+До фиксации reference ratio, масштаба эффекта и variance contract этот
+компонент остаётся неисполняемой заглушкой.

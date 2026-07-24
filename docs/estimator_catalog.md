@@ -1,5 +1,8 @@
 # Estimator Catalog
 
+> Историческая таблица. Актуальная классификация, нумерация, статусы и решения
+> об исключении находятся в [docs/methods/all_methods.md](methods/all_methods.md).
+
 This is a compact compatibility index. The current taxonomy and method
 documentation live in [`methods/README.md`](methods/README.md).
 The complete status registry is [`methods/all_methods.md`](methods/all_methods.md).

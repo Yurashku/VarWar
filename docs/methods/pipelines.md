@@ -1,39 +1,50 @@
-# Композиция методов
+# Готовые конвейеры
 
-Рекомендуемый порядок:
+В итоговой R&D-гонке сравниваются конвейеры с одинаковым estimand, допустимыми
+данными и одной политикой статистического вывода. Сравнение времени или
+дисперсии отдельных компонентов полезно для профилирования, но не определяет
+лучший пользовательский метод.
 
-```text
-historical numeric columns
-    ↓ NumericFeatureBinner.fit/transform
-historical categorical features
-    ↓ GeneticStrataReducer.fit
-frozen category → stratum mapping
-    ↓ transform(experiment)
-experiment with stratum
-    ↓ optional CUPED/CUPAC target transformation
-stratified estimator
-    ↓ optional multiple-testing correction
-final inference
-```
+## Основная гонка ATE
 
-## Допустимые композиции
+| ID строки | Состав | Назначение |
+| --- | --- | --- |
+| `welch_mean_diff` | Welch | статистический baseline без коррекции |
+| `hypex_ab` | HypEx A/B, default Welch | интеграционная проверка |
+| `cuped+hypex_ab` | CUPED VarWar → HypEx Welch | один pre-target |
+| `hypex_cupac` | temporal linear CUPAC HypEx → HypEx Welch | lag-2 → lag-1 → текущий target |
+| `sklearn_cupac_A+hypex_ab` | local linear CUPAC(A) → HypEx Welch | только pre-treatment признаки |
+| `sklearn_cupac_A_plus_B+hypex_ab` | local linear CUPAC(A+B) → HypEx Welch | плюс безопасные in-time признаки |
+| `sklearn_cupac_A_plus_B_plus_C+hypex_ab` | local linear CUPAC(A+B+C) → HypEx Welch | плюс признаки после balance gate |
+| `regression_adjustment` | OLS + HC1 | линейная ковариатная коррекция внутри estimator |
+| `ml_rate` | cross-fitted ridge → interacted OLS + HC1 | гибкая оценка без отдельного transformed target |
 
+## Гонка стратификации
+
+- `atomic_strata → stratified_mean_diff`
+- `random_reduction → stratified_mean_diff`
+- `mean_sorted_reduction → stratified_mean_diff`
 - `genetic_strata_reducer → stratified_mean_diff`
 - `numeric_feature_binner → genetic_strata_reducer → stratified_mean_diff`
-- `genetic_strata_reducer → CUPED → stratified_mean_diff`
-- `numeric_feature_binner → genetic_strata_reducer → CUPAC → stratified_mean_diff`
+- `genetic_strata_reducer → CUPED/CUPAC → stratified_mean_diff`
 
-## Недопустимые композиции
+`genetic_strata_ab` и `ab_proportional` в основной таблице методов не должны
+выглядеть самостоятельными estimators: это профиль и внутренняя objective.
 
-- Обучать binner boundaries на экспериментальном outcome.
-- Обучать GA mapping на post-treatment target.
-- Подбирать `n_strata` по p-value текущего эксперимента.
-- Считать GA самостоятельным effect estimator.
+## Отдельные гонки
 
-Для одиночного сравнения используется `run_stratification_race`. Для серии
-симуляций результаты объединяются и передаются в
-`summarize_stratification_trials`, который рассчитывает bias, RMSE, empirical
-standard deviation и rejection rate (FPR при true effect 0, power иначе).
-Готовый null/alternative прогон находится в
-`examples/run_stratification_simulation.py`; число повторов задаётся через
-`--trials` или `configs/stratification_simulation.toml`.
+Нельзя ранжировать вместе с обычным ATE без дополнительных оговорок:
+
+- `winsorized → estimator`: эффект на winsorized metric;
+- `ratio_delta`: эффект ratio-of-means;
+- `ratio_linearization → ...`: будущая отдельная семья ratio-конвейеров;
+- matching: ATT или другой observational estimand;
+- `wald_late`: LATE;
+- KS и energy: тесты различия распределений, а не ATE;
+- корректировки множественных проверок: применяются после получения семейства
+  статистик.
+
+Результаты синтетической гонки сохраняются отдельно от спецификации методов в
+`results/first_pipeline_race/`. Excel-каталог содержит отдельный лист
+«Пайплайны» с колонками для будущего заполнения bias, RMSE, FPR, power, времени
+и памяти.

@@ -1,29 +1,59 @@
-# Эстиматоры и статистические тесты
+# Оценивание эффекта и статистические тесты
 
-Все строки имеют категорию `Estimator` и возвращают `EstimateResult`. Колонка
-«Данные» явно отмечает допустимые дополнительные признаки; экспериментальные
-`treatment` и `target` требуются всегда.
+## Сопоставимые оценки среднего эффекта
 
-| ID | Цель или estimand | Данные | Доп. период | Сложность | Статус и главное ограничение |
-| --- | --- | --- | --- | --- | --- |
-| `welch_mean_diff` | ATE, unequal variance | Не менее 2 строк на arm | Не нужен | `O(N)` | Канонический baseline; closed-form Welch inference |
-| `hypex_ab` | Разность средних | Две группы | Не нужен | `O(N)` | Integration/parity baseline через PyPI HypEx; fallback явно отмечается в diagnostics |
-| `pooled_mean_diff` | Разность средних | Не менее 2 строк на arm | Не нужен | `O(N)` | Реализован; требует равных дисперсий |
-| `regression_adjustment` | Treatment coefficient | Числовые covariates | Только pre-treatment | `O(Nd²+d³)` | Реализован с HC1; линейная спецификация |
-| `ml_rate` | Cross-fitted adjusted ATE | Числовые covariates | Только pre-treatment | Зависит от folds и ridge fit | Реализован; нужен достаточный размер folds |
-| `stratified_mean_diff` | Взвешенный ATE внутри страт | Stratum column и optional population weights | Страты строятся до теста | `O(N+U)` | Реализован; sparse strata дают ошибку, opt-in `drop_renormalize` перенормирует веса |
-| `variance_weighted_stratified` | Inverse-variance summary | Готовая stratum column | Страты строятся до теста | `O(N+U)` | Реализован; estimand зависит от precision weights |
-| `ratio_delta` | Разность ratio metrics | Numerator, denominator | Не нужен | `O(N)` | Реализован; delta approximation нестабилен около нулевого denominator mean |
-| `wald_late` | LATE для compliers | Instrument, received treatment | Не нужен | `O(N)` | Реализован; требует ненулевую first stage |
-| `nearest_neighbor_matching` | ATT | Числовые covariates | Только pre-treatment | `O(N_tN_cd)` | Реализован как baseline; без replacement/transport inference |
-| `trimmed_mean_diff` | Разность trimmed means | Числовой target | Не нужен | `O(N log N)` | Реализован; меняет estimand |
-| `winsorized_mean_diff` | Разность winsorized means | Числовой target | Не нужен | `O(N log N)` | Реализован; меняет estimand |
-| `ks_test` | Расстояние CDF и p-value | Две независимые выборки | Не нужен | `O(N log N)` | Реализован через SciPy; не является ATE estimator |
-| `approx_ks_fast` | Histogram approximation KS | `n_bins` | Не нужен | `O(N+B)` | Реализован; accuracy зависит от bins |
-| `energy_test` | Energy distance | Resample count и seed | Не нужен | Зависит от resamples | Реализован; permutation runtime задаёт пользователь |
-| `randomized_t_test` | Hedgehog-weighted t statistic | Две числовые выборки | Не нужен | `O(N)` | Реализован; p-value использует Welch degrees of freedom |
-| `permutation_mean_test` | Randomization test mean difference | Resample count и seed | Не нужен | `O(RN)` | Реализован memory-bounded; Monte Carlo error зависит от `R` |
+| ID | Что оценивает | Смещение и условия | Статус |
+| --- | --- | --- | --- |
+| `welch_mean_diff` | Разность средних, ATE при рандомизации | Точечная оценка несмещённая; Welch не требует равных дисперсий | основной baseline |
+| `hypex_ab` | Та же разность средних через PyPI HypEx | По умолчанию HypEx задаёт `equal_var=False`, то есть использует Welch t-test | интеграционный baseline |
+| `regression_adjustment` | Коэффициент treatment в OLS с pre-treatment признаками | Состоятельная оценка при рандомизации; возможное малое конечновыборочное смещение | реализован |
+| `ml_rate` | ATE после cross-fitted прогноза outcome и итоговой interacted-регрессии | Состоятельность опирается на рандомизацию, честные folds и обычные условия регулярности | реализован |
+| `stratified_mean_diff` | Взвешенная сумма эффектов внутри страт | Несмещённая для ATE, заданного фиксированными весами страт | реализован |
 
-Методы, математическая постановка которых пока не идентифицирована, остаются
-явными `PlaceholderEstimator` и не имитируют готовую реализацию. Полный список
-готовых методов и заглушек находится в [общем реестре](all_methods.md).
+`stratified_mean_diff` обычно меняет **реализованную точечную оценку**, а не
+только стандартную ошибку и доверительный интервал: внутри каждой страты сначала
+считается свой эффект, затем эффекты взвешиваются. При корректной
+рандомизации математическое ожидание остаётся тем же ATE.
+
+## Специализированные оценки
+
+| ID | Цель | Почему не ставится в общую гонку ATE | Смещение и ограничения |
+| --- | --- | --- | --- |
+| `ratio_delta` | Разность отношений средних | Требует numerator/denominator и имеет собственную delta-инференцию | Отношение средних имеет малое конечновыборочное смещение; состоятельно вдали от нулевого знаменателя |
+| `nearest_neighbor_matching` | ATT по treated-наблюдениям | Предназначен прежде всего для наблюдательных данных | Смещение зависит от overlap, размерности и гладкости; текущий SE не учитывает всю неопределённость matching |
+| `wald_late` | LATE для compliers | Нужны instrument и фактически полученный treatment | Ratio-оценка смещена в конечной выборке; состоятельна только при IV-допущениях и сильной first stage |
+| `variance_weighted_stratified` | Эффект с precision-весами страт | Веса могут изменить целевую популяцию | Не является общей несмещённой ATE-оценкой при неоднородном эффекте |
+| `calibration_reweighting` | Эффект в целевой популяции | Нужны внешние population totals | Заглушка; без totals это уже другой метод балансировки |
+| `optimal_transport_matching` | Matching через optimal transport | Наблюдательный estimand и inference ещё не зафиксированы | Заглушка |
+
+Локальный `nearest_neighbor_matching` стандартизует числовые признаки и для
+каждого treated ищет одного ближайшего control с возвращением. `hypex_matcher`
+не является вторым готовым алгоритмом: это пока профиль будущей интеграции с
+более широким matching API HypEx. До фиксации расстояния, replacement, estimand
+и inference он не участвует в гонках.
+
+## Статистические тесты
+
+| ID | Нулевая гипотеза | Возвращает оценку ATE | Статус |
+| --- | --- | --- | --- |
+| `ks_test` | Распределения одинаковы | нет | реализован |
+| `approx_ks_fast` | Приближённый KS-критерий по гистограмме | нет | реализован |
+| `energy_test` | Распределения одинаковы | нет | реализован |
+| `randomized_t_test` | Средние не различаются для hedgehog-статистики | вспомогательную разность средних | реализован для R&D |
+| `permutation_mean_test` | Assignment не связан с разностью средних | да, но основной результат — randomization p-value | реализован |
+| `anti_nuclear_ks_test` | Tie-aware версия проверки распределений | нет | кандидат R&D |
+
+Для `anti_nuclear_ks_test` зафиксировано направление: совпадающие значения
+размыкаются treatment-blind способом на малом интервале, после чего p-value
+калибруется перестановками. Обычный непрерывный KS p-value нельзя механически
+считать точным после произвольного jitter. Детерминированная сетка допустима
+только если порядок точек не использует treatment.
+
+## Выведенные из активного сравнения
+
+| ID | Причина |
+| --- | --- |
+| `pooled_mean_diff` | Точечная оценка совпадает с Welch, а pooled SE дополнительно требует равных дисперсий |
+| `trimmed_mean_diff` | Групповое trimming меняет целевую метрику и дублирует идею трансформации |
+| `winsorized_mean_diff` | Заменён композицией `winsorized` → базовый estimator |
+| `optimal_transport_check` | Нет самостоятельной статистики или правила решения |
