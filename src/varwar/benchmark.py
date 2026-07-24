@@ -19,12 +19,10 @@ from varwar.stratification_benchmark import (
 def build_default_race(
     include_optional: bool = True,
     spec: ExperimentSpec | None = None,
-    include_unsafe_demo: bool = False,
 ) -> list[Estimator]:
     return default_estimators(
         include_optional=include_optional,
         spec=spec,
-        include_unsafe_demo=include_unsafe_demo,
     )
 
 

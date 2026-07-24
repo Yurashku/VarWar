@@ -15,7 +15,10 @@ import pandas as pd
 from varwar.benchmark import run_stratification_race, summarize_stratification_trials
 from varwar.core import ExperimentSpec
 from varwar.feature_adapters import NumericFeatureBinner
-from varwar.estimators import StratifiedDifferenceInMeansEstimator
+from varwar.estimators import (
+    DifferenceInMeansEstimator,
+    StratifiedDifferenceInMeansEstimator,
+)
 from varwar.stratification import (
     ABProportionalVarianceObjective,
     AtomicStrataSummary,
@@ -254,6 +257,23 @@ class StratificationRaceTests(unittest.TestCase):
         self.assertAlmostEqual(result.effect, 2.5)
         self.assertEqual(result.diagnostics["weight_source"], "reference")
 
+    def test_one_stratum_matches_welch_with_unequal_variances(self) -> None:
+        data = pd.DataFrame(
+            {
+                "treatment": [0, 0, 0, 0, 1, 1, 1, 1, 1],
+                "y": [0.0, 0.1, -0.1, 0.2, -2.0, 0.0, 1.0, 3.0, 5.0],
+                "stratum": ["all"] * 9,
+            }
+        )
+        spec = ExperimentSpec(stratum_col="stratum")
+        stratified = StratifiedDifferenceInMeansEstimator().estimate(data, spec)
+        welch = DifferenceInMeansEstimator().estimate(data, spec)
+        self.assertAlmostEqual(stratified.effect, welch.effect)
+        self.assertAlmostEqual(stratified.standard_error, welch.standard_error)
+        self.assertAlmostEqual(stratified.p_value, welch.p_value)
+        self.assertAlmostEqual(stratified.ci_low, welch.ci_low)
+        self.assertAlmostEqual(stratified.ci_high, welch.ci_high)
+
     def test_race_contains_ab_preprocessor(self) -> None:
         config = SyntheticConfig(n=900, effect=0.2, seed=21)
         data = generate_synthetic_ab(config)
@@ -302,9 +322,11 @@ class StratificationRaceTests(unittest.TestCase):
             ga_rows["effect"] - config.effect,
         )
         pipelines = set(results["pipeline"])
-        self.assertIn("cuped+hypex_ab", pipelines)
-        self.assertIn("hypex_cupac", pipelines)
-        self.assertTrue(any("sklearn_cupac_A_plus_B_plus_C" in name for name in pipelines))
+        self.assertIn("cuped_control__hypex_ab", pipelines)
+        self.assertIn("hypex_cupac_temporal", pipelines)
+        self.assertTrue(
+            any("cupac_linear_A_plus_B_plus_C" in name for name in pipelines)
+        )
 
     def test_trial_summary_labels_fpr_and_power(self) -> None:
         trials = pd.DataFrame(

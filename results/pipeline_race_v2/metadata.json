@@ -1,0 +1,61 @@
+{
+  "config": {
+    "n_trials": 200,
+    "n": 2500,
+    "alternative_effect": 0.15,
+    "covariate_signal": 0.75,
+    "noise_scale": 1.0,
+    "seed": 20260724,
+    "scenario_ids": [
+      "linear_gaussian",
+      "linear_heavy_tail",
+      "nonlinear_gaussian",
+      "contaminated_c",
+      "misclassified_b"
+    ],
+    "category_cols": [
+      "region",
+      "device",
+      "activity_band"
+    ],
+    "n_strata": 6,
+    "population_size": 16,
+    "max_generations": 25,
+    "elite_size": 3,
+    "patience": 7,
+    "min_macro_stratum_size": 8,
+    "mutation_probability": 0.2,
+    "prefer_pypi_hypex": true,
+    "alpha": 0.05,
+    "include_stratified": true,
+    "heavy_tail": null,
+    "pipeline_ids": null
+  },
+  "rows": 34000,
+  "successful_rows": 34000,
+  "raw_results_saved": true,
+  "refreshed_pipelines": [
+    "hypex_ab",
+    "hypex_cuped",
+    "cuped_control__hypex_ab",
+    "hypex_cupac_temporal",
+    "cupac_linear_A__hypex_ab",
+    "cupac_linear_A_plus_B__hypex_ab",
+    "cupac_linear_A_plus_B_plus_C__hypex_ab",
+    "cupac_quadratic_A__hypex_ab",
+    "winsorized__hypex_ab",
+    "ga_strata__stratified",
+    "ga_strata__cuped_control__stratified",
+    "ga_strata__cupac_linear_A__stratified",
+    "ga_strata__cupac_linear_A_plus_B__stratified",
+    "ga_strata__cupac_linear_A_plus_B_plus_C__stratified"
+  ],
+  "package_versions": {
+    "hypex": "1.0.6",
+    "numpy": "1.26.4",
+    "pandas": "2.2.3",
+    "scipy": "1.13.1",
+    "matplotlib": "3.9.0"
+  },
+  "memory_metric": "tracemalloc peak Python allocations; native NumPy/BLAS buffers excluded"
+}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import sys
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +21,7 @@ from varwar.estimators import (
     EnergyDistanceTestEstimator,
     HypExABTestEstimator,
     HypExCupacEstimator,
+    HypExCupedEstimator,
     KSTestEstimator,
     MLRateEstimator,
     NearestNeighborMatchingEstimator,
@@ -29,7 +31,7 @@ from varwar.estimators import (
 )
 from varwar.synthetic import SyntheticConfig, generate_historical_controls, generate_synthetic_ab
 from varwar.feature_sets import default_cupac_feature_sets
-from varwar.transforms import CupedTransformer
+from varwar.transforms import CupedTransformer, ZonedCupacTransformer
 
 
 class EstimatorTests(unittest.TestCase):
@@ -81,19 +83,21 @@ class EstimatorTests(unittest.TestCase):
         )
         names = set(results["estimator"])
         self.assertIn("hypex_ab", names)
-        self.assertIn("cuped+hypex_ab", names)
-        self.assertIn("hypex_cupac", names)
-        self.assertIn("sklearn_cupac_A+hypex_ab", names)
-        self.assertIn("sklearn_cupac_A_plus_B+hypex_ab", names)
-        self.assertIn("sklearn_cupac_A_plus_B_plus_C+hypex_ab", names)
+        self.assertIn("hypex_cuped", names)
+        self.assertIn("cuped_control__hypex_ab", names)
+        self.assertIn("hypex_cupac_temporal", names)
+        self.assertIn("cupac_linear_A__hypex_ab", names)
+        self.assertIn("cupac_linear_A_plus_B__hypex_ab", names)
+        self.assertIn("cupac_linear_A_plus_B_plus_C__hypex_ab", names)
         ok = results.set_index("estimator").loc[
             [
                 "hypex_ab",
-                "cuped+hypex_ab",
-                "hypex_cupac",
-                "sklearn_cupac_A+hypex_ab",
-                "sklearn_cupac_A_plus_B+hypex_ab",
-                "sklearn_cupac_A_plus_B_plus_C+hypex_ab",
+                "hypex_cuped",
+                "cuped_control__hypex_ab",
+                "hypex_cupac_temporal",
+                "cupac_linear_A__hypex_ab",
+                "cupac_linear_A_plus_B__hypex_ab",
+                "cupac_linear_A_plus_B_plus_C__hypex_ab",
             ]
         ]
         self.assertTrue((ok["status"] == "ok").all())
@@ -119,10 +123,78 @@ class EstimatorTests(unittest.TestCase):
             gated_in_time_cols=("c1",),
         )
         feature_sets = default_cupac_feature_sets(spec)
-        self.assertEqual(feature_sets[0].name, "sklearn_cupac_A")
-        self.assertEqual(feature_sets[0].columns, ("a1", "a2"))
-        self.assertEqual(feature_sets[1].columns, ("a1", "a2", "b1"))
-        self.assertEqual(feature_sets[2].columns, ("a1", "a2", "b1", "c1"))
+        self.assertEqual(feature_sets[0].method_id, "cupac_linear_A")
+        self.assertEqual(feature_sets[0].zones, ("A",))
+        self.assertEqual(feature_sets[1].zones, ("A", "B"))
+        self.assertEqual(
+            feature_sets[1].safety_status,
+            "exploratory_expert_safe_in_time",
+        )
+        self.assertEqual(feature_sets[2].zones, ("A", "B", "C"))
+
+    def test_zoned_cupac_needs_no_auxiliary_sample(self) -> None:
+        data = generate_synthetic_ab(
+            SyntheticConfig(n=1500, effect=0.2, seed=31)
+        )
+        spec = ExperimentSpec(
+            pre_target_col="y_pre",
+            pre_treatment_cols=("y_pre", "x1", "x2"),
+            expert_safe_in_time_cols=("calendar_index", "market_index"),
+            gated_in_time_cols=("operational_load",),
+        )
+        policies = default_cupac_feature_sets(spec)
+        a = ZonedCupacTransformer(policies[0]).fit_transform(data, spec)
+        ab_transformer = ZonedCupacTransformer(policies[1])
+        ab = ab_transformer.fit_transform(data, spec)
+        abc_transformer = ZonedCupacTransformer(
+            replace(
+                policies[2],
+                max_abs_smd=10.0,
+                max_missing_rate_difference=1.0,
+                max_ks_distance=1.0,
+            )
+        )
+        abc = abc_transformer.fit_transform(data, spec)
+        self.assertEqual(len(a), len(data))
+        self.assertEqual(len(ab), len(data))
+        self.assertEqual(len(abc), len(data))
+        self.assertEqual(ab_transformer.diagnostics()["stage_count"], 2)
+        self.assertEqual(
+            ab_transformer.diagnostics()["stage_1"],
+            "cupac_A",
+        )
+        self.assertEqual(
+            ab_transformer.diagnostics()["stage_2"],
+            "linear_adjustment_B",
+        )
+        self.assertEqual(abc_transformer.diagnostics()["stage_count"], 3)
+        self.assertEqual(
+            abc_transformer.diagnostics()["stage_3"],
+            "linear_adjustment_C",
+        )
+
+    def test_zone_c_gate_rejects_treatment_dependent_feature(self) -> None:
+        data = generate_synthetic_ab(
+            SyntheticConfig(
+                n=3000,
+                effect=0.0,
+                gated_treatment_shift=0.8,
+                seed=37,
+            )
+        )
+        spec = ExperimentSpec(
+            pre_target_col="y_pre",
+            pre_treatment_cols=("y_pre", "x1", "x2"),
+            expert_safe_in_time_cols=("calendar_index", "market_index"),
+            gated_in_time_cols=("operational_load",),
+        )
+        transformer = ZonedCupacTransformer(default_cupac_feature_sets(spec)[2])
+        transformer.fit_transform(data, spec)
+        self.assertEqual(
+            transformer.diagnostics()["zone_c_rejected"],
+            "operational_load",
+        )
+        self.assertEqual(transformer.diagnostics()["stage_count"], 2)
 
     def test_ratio_delta_returns_finite_estimate(self) -> None:
         data = pd.DataFrame(
@@ -207,6 +279,28 @@ class EstimatorTests(unittest.TestCase):
         self.assertEqual(adjusted.diagnostics["variance_reduction"], "cupac")
         self.assertNotAlmostEqual(adjusted.effect, raw.effect, places=10)
         self.assertLess(adjusted.standard_error, raw.standard_error)
+
+    def test_pypi_hypex_ab_ignores_irrelevant_categorical_columns(self) -> None:
+        try:
+            import hypex  # noqa: F401
+        except ImportError:
+            self.skipTest("PyPI HypEx is not installed in this runtime")
+
+        data = generate_synthetic_ab(SyntheticConfig(n=600, effect=0.20, seed=103))
+        spec = ExperimentSpec(
+            covariate_cols=("y_pre", "region", "device"),
+            pre_treatment_cols=("y_pre", "region", "device"),
+        )
+        result = HypExABTestEstimator(
+            prefer_pypi=True,
+            require_pypi=True,
+        ).estimate(data, spec)
+
+        self.assertEqual(result.diagnostics["backend"], "pypi_hypex")
+        self.assertEqual(
+            result.diagnostics["standard_error_source"],
+            "welch_on_hypex_output_target",
+        )
 
     def test_placeholder_is_explicit(self) -> None:
         placeholder = PlaceholderEstimator("unknown", "needs research")

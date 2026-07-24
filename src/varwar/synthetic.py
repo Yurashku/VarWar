@@ -15,6 +15,10 @@ class SyntheticConfig:
     noise_scale: float = 1.0
     seed: int = 42
     heavy_tail: bool = False
+    outcome_model: str = "linear"
+    effect_heterogeneity: float = 0.0
+    expert_safe_treatment_shift: float = 0.0
+    gated_treatment_shift: float = 0.0
 
 
 def generate_synthetic_ab(config: SyntheticConfig = SyntheticConfig()) -> pd.DataFrame:
@@ -23,17 +27,9 @@ def generate_synthetic_ab(config: SyntheticConfig = SyntheticConfig()) -> pd.Dat
     rng = np.random.default_rng(config.seed)
     n = config.n
     treatment = rng.binomial(1, 0.5, size=n)
+    if config.outcome_model not in {"linear", "nonlinear"}:
+        raise ValueError("outcome_model must be 'linear' or 'nonlinear'.")
     y_pre_lag2 = rng.normal(0.0, 1.0, size=n)
-    lag_correlation = 0.65
-    y_pre = (
-        lag_correlation * y_pre_lag2
-        + math.sqrt(1.0 - lag_correlation**2) * rng.normal(0.0, 1.0, size=n)
-    )
-    x1 = config.covariate_signal * y_pre + rng.normal(0.0, 0.7, size=n)
-    x2 = rng.normal(0.0, 1.0, size=n)
-    calendar_index = rng.normal(0.0, 1.0, size=n)
-    market_index = 0.5 * calendar_index + rng.normal(0.0, 0.6, size=n)
-    operational_load = 0.35 * y_pre + 0.4 * calendar_index + rng.normal(0.0, 0.7, size=n)
     x1_lag2 = config.covariate_signal * y_pre_lag2 + rng.normal(0.0, 0.7, size=n)
     x2_lag2 = rng.normal(0.0, 1.0, size=n)
     calendar_index_lag2 = rng.normal(0.0, 1.0, size=n)
@@ -42,6 +38,31 @@ def generate_synthetic_ab(config: SyntheticConfig = SyntheticConfig()) -> pd.Dat
         0.35 * y_pre_lag2
         + 0.4 * calendar_index_lag2
         + rng.normal(0.0, 0.7, size=n)
+    )
+    lag_correlation = 0.65
+    y_pre_signal = (
+        lag_correlation * y_pre_lag2
+        + 0.18 * x1_lag2
+        - 0.08 * x2_lag2
+        + 0.10 * calendar_index_lag2
+    )
+    if config.outcome_model == "nonlinear":
+        y_pre_signal += (
+            0.30 * (y_pre_lag2**2 - 1.0)
+            + 0.20 * np.sin(x2_lag2)
+            + 0.12 * x1_lag2 * calendar_index_lag2
+        )
+    y_pre = y_pre_signal + math.sqrt(1.0 - lag_correlation**2) * rng.normal(
+        0.0,
+        1.0,
+        size=n,
+    )
+    x1 = config.covariate_signal * y_pre + rng.normal(0.0, 0.7, size=n)
+    x2 = rng.normal(0.0, 1.0, size=n)
+    calendar_latent = rng.normal(0.0, 1.0, size=n)
+    market_latent = 0.5 * calendar_latent + rng.normal(0.0, 0.6, size=n)
+    operational_latent = (
+        0.35 * y_pre + 0.4 * calendar_latent + rng.normal(0.0, 0.7, size=n)
     )
     if config.heavy_tail:
         noise = rng.standard_t(df=3, size=n) * config.noise_scale
@@ -53,12 +74,28 @@ def generate_synthetic_ab(config: SyntheticConfig = SyntheticConfig()) -> pd.Dat
         + config.covariate_signal * y_pre
         + 0.35 * x1
         - 0.15 * x2
-        + 0.20 * calendar_index
-        + 0.18 * market_index
-        + 0.25 * operational_load
+        + 0.20 * calendar_latent
+        + 0.18 * market_latent
+        + 0.25 * operational_latent
     )
+    if config.outcome_model == "nonlinear":
+        baseline += (
+            0.40 * (y_pre**2 - float(np.mean(y_pre**2)))
+            + 0.25 * np.sin(x2)
+            + 0.15 * x1 * calendar_latent
+        )
     y0 = baseline + noise
-    y = y0 + treatment * config.effect
+    centered_pre = y_pre - float(y_pre.mean())
+    individual_effect = config.effect + config.effect_heterogeneity * centered_pre
+    y = y0 + treatment * individual_effect
+
+    calendar_index = (
+        calendar_latent + treatment * config.expert_safe_treatment_shift
+    )
+    market_index = market_latent
+    operational_load = (
+        operational_latent + treatment * config.gated_treatment_shift
+    )
 
     denominator = rng.poisson(lam=4.0, size=n).astype(float) + 1.0
     numerator_rate = 0.2 + 0.02 * baseline + treatment * config.effect / 20.0
@@ -84,6 +121,7 @@ def generate_synthetic_ab(config: SyntheticConfig = SyntheticConfig()) -> pd.Dat
             "treatment": treatment,
             "y": y,
             "y0": y0,
+            "individual_effect": individual_effect,
             "y_pre": y_pre,
             "y_pre__lag2": y_pre_lag2,
             "x1": x1,
@@ -119,6 +157,10 @@ def generate_historical_controls(config: SyntheticConfig = SyntheticConfig()) ->
             noise_scale=config.noise_scale,
             seed=config.seed + 10_000,
             heavy_tail=config.heavy_tail,
+            outcome_model=config.outcome_model,
+            effect_heterogeneity=config.effect_heterogeneity,
+            expert_safe_treatment_shift=0.0,
+            gated_treatment_shift=0.0,
         )
     )
     historical["treatment"] = 0

@@ -9,15 +9,23 @@
 
 | ID строки | Состав | Назначение |
 | --- | --- | --- |
-| `welch_mean_diff` | Welch | статистический baseline без коррекции |
+| `welch` | `welch_mean_diff` | статистический baseline без коррекции |
 | `hypex_ab` | HypEx A/B, default Welch | интеграционная проверка |
-| `cuped+hypex_ab` | CUPED VarWar → HypEx Welch | один pre-target |
-| `hypex_cupac` | temporal linear CUPAC HypEx → HypEx Welch | lag-2 → lag-1 → текущий target |
-| `sklearn_cupac_A+hypex_ab` | local linear CUPAC(A) → HypEx Welch | только pre-treatment признаки |
-| `sklearn_cupac_A_plus_B+hypex_ab` | local linear CUPAC(A+B) → HypEx Welch | плюс безопасные in-time признаки |
-| `sklearn_cupac_A_plus_B_plus_C+hypex_ab` | local linear CUPAC(A+B+C) → HypEx Welch | плюс признаки после balance gate |
+| `hypex_cuped` | нативный HypEx CUPED → HypEx Welch | интеграционная проверка |
+| `cuped_control__hypex_ab` | CUPED по текущему контролю → HypEx Welch | один pre-target |
+| `hypex_cupac_temporal` | temporal linear CUPAC HypEx → HypEx Welch | интеграционная проверка lag2 → lag1 |
+| `cupac_linear_A__hypex_ab` | temporal CUPAC A → HypEx Welch | только pre-treatment признаки |
+| `cupac_linear_A_plus_B__hypex_ab` | CUPAC A → отдельный linear B → HypEx Welch | исследовательский: экспертно safe in-time признаки |
+| `cupac_linear_A_plus_B_plus_C__hypex_ab` | A → B → gated linear C → HypEx Welch | исследовательская зона C |
+| `cupac_quadratic_A__hypex_ab` | quadratic temporal CUPAC A → HypEx Welch | ограниченная нелинейность зоны A |
 | `regression_adjustment` | OLS + HC1 | линейная ковариатная коррекция внутри estimator |
 | `ml_rate` | cross-fitted ridge → interacted OLS + HC1 | гибкая оценка без отдельного transformed target |
+| `winsorized__hypex_ab` | control-winsorization → HypEx Welch | отдельный изменённый estimand |
+
+Все локальные CUPAC-варианты работают с одним доступным датасетом. Этап A
+обучается только на временном переходе `lag2 → lag1`, этапы B/C — на текущем
+контроле. `hypex_cupac_temporal` является библиотечной проверкой, а не звеном
+локальной predecessor-цепочки.
 
 ## Гонка стратификации
 
@@ -28,8 +36,10 @@
 - `numeric_feature_binner → genetic_strata_reducer → stratified_mean_diff`
 - `genetic_strata_reducer → CUPED/CUPAC → stratified_mean_diff`
 
-`genetic_strata_ab` и `ab_proportional` в основной таблице методов не должны
-выглядеть самостоятельными estimators: это профиль и внутренняя objective.
+Полные строки новой гонки называются `ga_strata__stratified`,
+`ga_strata__cuped_control__stratified` и
+`ga_strata__cupac_linear_*__stratified`. `ab_proportional` — внутренняя
+целевая функция GA, а не estimator и не способ разбить пользователей на A/B.
 
 ## Отдельные гонки
 
@@ -44,7 +54,6 @@
 - корректировки множественных проверок: применяются после получения семейства
   статистик.
 
-Результаты синтетической гонки сохраняются отдельно от спецификации методов в
-`results/first_pipeline_race/`. Excel-каталог содержит отдельный лист
-«Пайплайны» с колонками для будущего заполнения bias, RMSE, FPR, power, времени
-и памяти.
+Результаты актуальной синтетической гонки сохраняются отдельно от
+спецификации методов в `results/pipeline_race_v2/`. Каталог каждого запуска
+фиксирует состав, estimand, контур применимости и предыдущий пайплайн цепочки.

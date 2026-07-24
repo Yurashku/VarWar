@@ -26,9 +26,8 @@ runner, composable estimator wrappers, synthetic data generation, and tests.
 - HypEx-compatible A/B baseline slot, with PyPI `hypex` dependency.
 - Optional external HypEx backend hook via `VARWAR_HYPEX_BACKEND`.
 - CUPED target adjustment.
-- Linear/Ridge CUPAC target adjustment, including RnD6 A, A+B, and A+B+C
-  feature-set variants.
-- `hypex_cupac` reference/parity slot.
+- Temporal linear/ridge CUPAC A and separate control-fitted B/C adjustments.
+- `hypex_cupac_temporal` reference/parity slot.
 - KS two-sample test, randomized/hedgehog t-test, and permutation mean test.
 - Genetic reduction of atomic strata with the A/B-proportional objective,
   plus target-free numeric feature binning.
@@ -52,8 +51,9 @@ runner, composable estimator wrappers, synthetic data generation, and tests.
 
 - `python -m unittest discover -s tests`
 - `python examples/run_synthetic_race.py`
+- `python examples/run_pipeline_race_v2.py --trials 5`
 - `python examples/run_stratification_simulation.py --trials 2`
-- Default race output starts with `welch_mean_diff` and contains `hypex_ab`,
-  `cuped+hypex_ab`, `hypex_cupac`,
-  `sklearn_cupac_A+hypex_ab`, `sklearn_cupac_A_plus_B+hypex_ab`, and
-  `sklearn_cupac_A_plus_B_plus_C+hypex_ab`.
+- Default race contains `welch`, `hypex_ab`, `hypex_cuped`,
+  `cuped_control__hypex_ab`, `hypex_cupac_temporal`,
+  `cupac_linear_A__hypex_ab`, `cupac_linear_A_plus_B__hypex_ab`, and
+  `cupac_linear_A_plus_B_plus_C__hypex_ab`.

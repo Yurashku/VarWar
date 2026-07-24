@@ -5,7 +5,7 @@ from pathlib import Path
 
 from varwar.benchmark import run_estimator_race
 from varwar.core import ExperimentSpec
-from varwar.synthetic import SyntheticConfig, generate_historical_controls, generate_synthetic_ab
+from varwar.synthetic import SyntheticConfig, generate_synthetic_ab
 
 
 def run_synthetic(args: argparse.Namespace) -> None:
@@ -18,7 +18,6 @@ def run_synthetic(args: argparse.Namespace) -> None:
         heavy_tail=args.heavy_tail,
     )
     data = generate_synthetic_ab(config)
-    historical = generate_historical_controls(config)
     spec = ExperimentSpec(
         covariate_cols=("y_pre", "x1", "x2"),
         pre_treatment_cols=("y_pre", "x1", "x2"),
@@ -35,10 +34,23 @@ def run_synthetic(args: argparse.Namespace) -> None:
     result = run_estimator_race(
         data,
         spec,
-        auxiliary_data=historical,
+        auxiliary_data=None,
         measure_memory=args.measure_memory,
     )
-    print(result.to_string(index=False))
+    console_columns = [
+        "estimator",
+        "status",
+        "effect",
+        "standard_error",
+        "p_value",
+        "ci_low",
+        "ci_high",
+        "n_control",
+        "n_treatment",
+        "runtime_ms",
+        "diag_backend",
+    ]
+    print(result.reindex(columns=console_columns).to_string(index=False))
     if args.output:
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)

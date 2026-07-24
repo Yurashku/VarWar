@@ -7,6 +7,7 @@ from varwar.estimators import (
     EnergyDistanceTestEstimator,
     HypExABTestEstimator,
     HypExCupacEstimator,
+    HypExCupedEstimator,
     KSTestEstimator,
     MLRateEstimator,
     NearestNeighborMatchingEstimator,
@@ -27,7 +28,12 @@ from varwar.placeholders import (
     PlaceholderMetricTransformer,
     PlaceholderTargetTransformer,
 )
-from varwar.transforms import CupedTransformer, LinearCupacTransformer, WinsorizeTransformer
+from varwar.transforms import (
+    CupedTransformer,
+    QuadraticCupacTransformer,
+    WinsorizeTransformer,
+    ZonedCupacTransformer,
+)
 
 
 def placeholder_estimators() -> list[PlaceholderEstimator]:
@@ -55,6 +61,11 @@ def placeholder_estimators() -> list[PlaceholderEstimator]:
             "optimal_transport_matching",
             "needs matching distance, regularization, and inference policy",
         ),
+        PlaceholderEstimator(
+            "optimal_transport_homogeneity_test",
+            "needs a scalable OT solver, a fixed statistic, and a "
+            "permutation-calibration contract",
+        ),
     ]
 
 
@@ -68,8 +79,8 @@ def placeholder_target_transformers() -> list[PlaceholderTargetTransformer]:
         ),
         PlaceholderTargetTransformer(
             "nonlinear_cupac",
-            "needs an honest reference-fit model contract, tuning policy, and "
-            "resource-bounded model family",
+            "needs a temporal same-dataset training contract, tuning policy, "
+            "and a resource-bounded model family beyond quadratic features",
         ),
         PlaceholderTargetTransformer(
             "robust_cuped",
@@ -78,8 +89,8 @@ def placeholder_target_transformers() -> list[PlaceholderTargetTransformer]:
         ),
         PlaceholderTargetTransformer(
             "trimming",
-            "needs reference thresholds plus an explicit row-filtering and "
-            "missing-row inference contract",
+            "needs control-defined thresholds plus an explicit row-filtering "
+            "and missing-row inference contract",
         ),
     ]
 
@@ -90,8 +101,8 @@ def placeholder_metric_transformers() -> list[PlaceholderMetricTransformer]:
     return [
         PlaceholderMetricTransformer(
             "ratio_linearization",
-            "needs a reference ratio, scale restoration rule, and a contract "
-            "for composition with target transformers and base estimators",
+            "needs a fixed baseline ratio, a scale restoration rule, and a "
+            "contract for composition with target transformers and estimators",
         )
     ]
 
@@ -111,7 +122,6 @@ def placeholder_design_preprocessors() -> list[PlaceholderDesignPreprocessor]:
 def default_estimators(
     include_optional: bool = True,
     spec: ExperimentSpec | None = None,
-    include_unsafe_demo: bool = False,
 ) -> list:
     spec = spec or ExperimentSpec(
         covariate_cols=("y_pre", "x1", "x2"),
@@ -123,27 +133,39 @@ def default_estimators(
     estimators = [
         DifferenceInMeansEstimator(),
         HypExABTestEstimator(),
-        WrappedEstimator(CupedTransformer(), HypExABTestEstimator()),
+        HypExCupedEstimator(),
+        WrappedEstimator(
+            CupedTransformer(fit_data="experiment_control"),
+            HypExABTestEstimator(),
+            name="cuped_control__hypex_ab",
+        ),
         HypExCupacEstimator(cupac_features=spec.pre_treatment_features()),
     ]
-    for feature_set in default_cupac_feature_sets(
-        spec,
-        include_unsafe_demo=include_unsafe_demo,
-    ):
-        if feature_set.columns:
+    for feature_set in default_cupac_feature_sets(spec):
+        if spec.pre_treatment_features():
             estimators.append(
                 WrappedEstimator(
-                    LinearCupacTransformer(
-                        feature_cols=feature_set.columns,
-                        name=feature_set.name,
-                    ),
+                    ZonedCupacTransformer(policy=feature_set),
                     HypExABTestEstimator(),
-                    name=f"{feature_set.name}+hypex_ab",
+                    name=f"{feature_set.method_id}__hypex_ab",
                 )
             )
+    estimators.append(
+        WrappedEstimator(
+            QuadraticCupacTransformer(
+                feature_cols=spec.pre_treatment_features(),
+            ),
+            HypExABTestEstimator(),
+            name="cupac_quadratic_A__hypex_ab",
+        )
+    )
     estimators.extend(
         [
-            WrappedEstimator(WinsorizeTransformer(), HypExABTestEstimator()),
+            WrappedEstimator(
+                WinsorizeTransformer(),
+                HypExABTestEstimator(),
+                name="winsorized__hypex_ab",
+            ),
             DifferenceInMeansEstimator(name="pooled_mean_diff", variance="pooled"),
             KSTestEstimator(),
             ApproxKSTestEstimator(),
