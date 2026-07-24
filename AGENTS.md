@@ -34,14 +34,20 @@ compared on synthetic data now and on internal real data later.
 
 - Base estimators implement `estimate(data, spec) -> EstimateResult`.
 - Target wrappers implement `fit_transform(data, spec, auxiliary_data=None)`.
+  Primary race pipelines must work from one available experiment dataset;
+  `auxiliary_data` is an explicit opt-in compatibility path, never an implicit
+  default.
 - `WrappedEstimator` composes a target wrapper with any base estimator.
 - `GeneticStrataReducer` is a `DesignPreprocessor`; benchmark it with
   `run_stratification_race`, not as a standalone estimator.
 - `NumericFeatureBinner` is a target-free `FeatureAdapter`. Fit its boundaries
   on reference data and reuse them unchanged on experiment data.
-- The default race must include `hypex_ab`, `cuped+hypex_ab`, `hypex_cupac`,
-  `sklearn_cupac_A+hypex_ab`, `sklearn_cupac_A_plus_B+hypex_ab`, and
-  `sklearn_cupac_A_plus_B_plus_C+hypex_ab`.
+- The default race must include `welch`, `hypex_ab`, `hypex_cuped`,
+  `cuped_control__hypex_ab`, `hypex_cupac_temporal`,
+  `cupac_linear_A__hypex_ab`, `cupac_linear_A_plus_B__hypex_ab`, and
+  `cupac_linear_A_plus_B_plus_C__hypex_ab`.
+- CUPAC A is temporal `lag2 -> lag1` prediction. B and C are separate
+  control-fitted linear stages; they must not be folded into the A model.
 - Use `welch_mean_diff` as the canonical no-adjustment statistical baseline;
   keep HypEx rows as integration/parity baselines.
 - Use the PyPI `hypex` package for HypEx baselines. If an internal wrapper is
@@ -56,6 +62,7 @@ Run at least:
 python -m unittest discover -s tests
 python examples/run_synthetic_race.py
 python examples/run_stratification_race.py
+python examples/run_pipeline_race_v2.py --trials 5 --output-dir results/smoke/pipeline_race_v2
 ```
 
 When adding a method, add a synthetic scenario that can fail if the estimator is

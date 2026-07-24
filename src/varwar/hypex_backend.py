@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from varwar.core import EstimateResult, ExperimentSpec
-from varwar.stats import t_critical
+from varwar.stats import t_critical, t_two_sided_p
 
 
 class HypExBackendUnavailable(RuntimeError):
@@ -29,6 +29,7 @@ def estimate_with_hypex_abtest(
         from hypex import ABTest
         from hypex.dataset import (
             Dataset,
+            ExperimentData,
             FeatureRole,
             InfoRole,
             PreTargetRole,
@@ -52,11 +53,6 @@ def estimate_with_hypex_abtest(
         if spec.unit_col and spec.unit_col in data.columns:
             roles[spec.unit_col] = InfoRole()
 
-        feature_cols = set(spec.pre_treatment_features())
-        feature_cols.update(spec.expert_safe_in_time_cols)
-        feature_cols.update(spec.gated_in_time_cols)
-        if spec.pre_target_col and spec.pre_target_col in data.columns:
-            feature_cols.add(spec.pre_target_col)
         clean = data[[column for column in roles if column in data.columns]].copy(
             deep=False
         )
@@ -103,11 +99,14 @@ def estimate_with_hypex_abtest(
                     parent=column,
                     lag=2,
                 )
-        else:
-            for column in feature_cols:
-                if column in data.columns and column not in roles:
-                    roles[column] = FeatureRole(float)
-                    clean[column] = np.asarray(data[column], dtype=float)
+        elif cuped_features:
+            for covariate in dict.fromkeys(cuped_features.values()):
+                if covariate not in data.columns:
+                    raise HypExBackendUnavailable(
+                        f"HypEx CUPED covariate {covariate!r} is missing."
+                    )
+                roles[covariate] = FeatureRole(float)
+                clean[covariate] = np.asarray(data[covariate], dtype=float)
 
         clean = clean[[column for column in roles if column in clean.columns]]
         dataset = Dataset(roles=roles, data=clean)
@@ -118,35 +117,54 @@ def estimate_with_hypex_abtest(
             enable_cupac=bool(cupac_features),
             cupac_models="linear",
         )
-        output = ab_test.execute(dataset)
-        resume = getattr(output, "resume", None)
-        resume_df = getattr(resume, "data", resume)
-        if not isinstance(resume_df, pd.DataFrame):
-            raise HypExBackendUnavailable("HypEx ABTest resume is not a pandas DataFrame.")
-        output_target = (
-            f"{spec.target_col}_cupac" if cupac_features else spec.target_col
-        )
-        row = _select_target_row(resume_df, output_target)
-        effect = _first_present(row, ["difference", "Difference", "mean difference"])
-        p_value = _first_present(row, ["TTest p-value 1", "TTest p-value", "p-value"])
-        n_control, n_treatment, raw_se, df = _group_statistics(data, spec)
-        variance_reduced = bool(cuped_features or cupac_features)
-        if variance_reduced:
-            statistic, se = _infer_statistic_and_se(effect, p_value, df)
-            se_source = "p_value_inversion"
+        if cupac_features:
+            output_target = f"{spec.target_col}_cupac"
+        elif cuped_features:
+            output_target = f"{spec.target_col}_cuped"
         else:
-            se = raw_se
-            statistic = effect / se if se > 0.0 else float("nan")
-            se_source = "welch_group_variance"
+            output_target = spec.target_col
+
+        experiment_data = ab_test.experiment.execute(ExperimentData(dataset))
+        if output_target in experiment_data.ds.data.columns:
+            transformed = experiment_data.ds.data[output_target]
+        else:
+            additional = experiment_data.additional_fields.data
+            if output_target not in additional.columns:
+                raise HypExBackendUnavailable(
+                    f"HypEx did not produce transformed target {output_target!r}."
+                )
+            transformed = additional[output_target]
+
+        analysis_target = "__varwar_hypex_output_target"
+        analysis_data = pd.DataFrame(
+            {
+                spec.treatment_col: np.asarray(data[spec.treatment_col]),
+                analysis_target: np.asarray(transformed, dtype=float),
+            },
+            index=data.index,
+        )
+        analysis_spec = spec.with_target(analysis_target)
+        n_control, n_treatment, se, df = _group_statistics(
+            analysis_data,
+            analysis_spec,
+        )
+        target = np.asarray(analysis_data[analysis_target], dtype=float)
+        treatment = np.asarray(analysis_data[spec.treatment_col])
+        control = target[treatment == spec.control_value]
+        treated = target[treatment == spec.treatment_value]
+        effect = float(np.mean(treated) - np.mean(control))
+        statistic = effect / se if se > 0.0 else float("nan")
+        p_value = t_two_sided_p(statistic, df)
         critical = t_critical(spec.alpha, df)
         ci_low = float(effect - critical * se) if math.isfinite(se) else float("nan")
         ci_high = float(effect + critical * se) if math.isfinite(se) else float("nan")
         diagnostics = {
             "backend": "pypi_hypex",
-            "standard_error_source": se_source,
+            "standard_error_source": "welch_on_hypex_output_target",
             "degrees_of_freedom": df,
+            "hypex_output_target": output_target,
         }
-        if variance_reduced:
+        if cuped_features or cupac_features:
             diagnostics["variance_reduction"] = (
                 "cupac" if cupac_features else "cuped"
             )
@@ -166,25 +184,6 @@ def estimate_with_hypex_abtest(
         n_treatment=n_treatment,
         diagnostics=diagnostics,
     )
-
-
-def _select_target_row(resume_df: pd.DataFrame, target_col: str) -> pd.Series:
-    if "feature" in resume_df.columns:
-        exact = resume_df[resume_df["feature"] == target_col]
-        if len(exact):
-            return exact.iloc[0]
-    if len(resume_df) == 0:
-        raise HypExBackendUnavailable("HypEx ABTest resume is empty.")
-    return resume_df.iloc[0]
-
-
-def _first_present(row: pd.Series, names: list[str], default: float | None = None) -> float:
-    for name in names:
-        if name in row.index and pd.notna(row[name]):
-            return float(row[name])
-    if default is not None:
-        return default
-    raise HypExBackendUnavailable(f"HypEx ABTest output lacks columns: {names}")
 
 
 def _group_statistics(
@@ -212,21 +211,3 @@ def _group_statistics(
         else float(control.size + treated.size - 2)
     )
     return int(control.size), int(treated.size), standard_error, degrees_of_freedom
-
-
-def _infer_statistic_and_se(
-    effect: float,
-    p_value: float,
-    degrees_of_freedom: float,
-) -> tuple[float, float]:
-    try:
-        from scipy import stats as scipy_stats  # type: ignore
-
-        magnitude = float(scipy_stats.t.isf(p_value / 2.0, degrees_of_freedom))
-        statistic = math.copysign(magnitude, effect)
-        standard_error = abs(effect / statistic) if statistic != 0.0 else float("nan")
-        return statistic, standard_error
-    except Exception as exc:
-        raise HypExBackendUnavailable(
-            "Cannot derive variance-reduced standard error from HypEx p-value."
-        ) from exc

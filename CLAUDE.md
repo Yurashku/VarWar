@@ -7,10 +7,11 @@ Important defaults:
 - The active source lives in `src/varwar`.
 - Old notebooks and prototypes live in `legacy`.
 - HypEx baselines use the PyPI `hypex` package when available and are
-  represented by `hypex_ab`, `cuped+hypex_ab`, and `hypex_cupac`.
+  represented by `hypex_ab`, `hypex_cuped`, and `hypex_cupac_temporal`.
 - `welch_mean_diff` is the canonical statistical baseline. HypEx rows measure
   package parity and wrapper integration.
-- CUPAC is not one layer: keep the RnD6 A/B/C feature-chain variants separate.
+- CUPAC is not one layer: keep A as temporal `lag2 -> lag1` CUPAC and B/C as
+  separate control-fitted linear stages with distinct admission policies.
 - External implementations are research references only. Public documentation
   must describe the algorithms and guarantees implemented in VarWar.
 - Genetic strata reduction is a design preprocessor with a separate race;

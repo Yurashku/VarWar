@@ -307,11 +307,15 @@ class HypExABTestEstimator(DifferenceInMeansEstimator):
         backend: Callable[[pd.DataFrame, ExperimentSpec], EstimateResult] | None = None,
         backend_path: str | None = None,
         prefer_pypi: bool = True,
+        require_pypi: bool = False,
         name: str = "hypex_ab",
     ) -> None:
         super().__init__(name=name, variance="welch")
         self.backend = backend or _load_backend(backend_path)
         self.prefer_pypi = prefer_pypi
+        self.require_pypi = require_pypi
+        if self.require_pypi and not self.prefer_pypi and self.backend is None:
+            raise ValueError("require_pypi=True requires prefer_pypi=True.")
 
     def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
         if self.backend is not None:
@@ -344,6 +348,10 @@ class HypExABTestEstimator(DifferenceInMeansEstimator):
                     diagnostics=result.diagnostics,
                 )
             except HypExBackendUnavailable as exc:
+                if self.require_pypi:
+                    raise RuntimeError(
+                        f"Required PyPI HypEx backend failed: {exc}"
+                    ) from exc
                 fallback_reason = str(exc)
         else:
             fallback_reason = "pypi backend disabled"
@@ -367,29 +375,29 @@ class HypExABTestEstimator(DifferenceInMeansEstimator):
 
 
 @dataclass
-class HypExCupacEstimator:
-    name: str = "hypex_cupac"
-    cupac_features: tuple[str, ...] | None = None
+class HypExCupedEstimator:
+    """PyPI HypEx CUPED followed by its default Welch A/B test.
+
+    HypEx estimates the CUPED coefficient on the complete experiment dataset.
+    The local fallback reproduces that data policy explicitly.
+    """
+
+    name: str = "hypex_cuped"
+    covariate_col: str | None = None
     prefer_pypi: bool = True
+    require_pypi: bool = False
 
     def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
-        return self.estimate_with_auxiliary(data, spec, auxiliary_data=None)
-
-    def estimate_with_auxiliary(
-        self,
-        data: pd.DataFrame,
-        spec: ExperimentSpec,
-        auxiliary_data: pd.DataFrame | None,
-    ) -> EstimateResult:
-        features = self.cupac_features or spec.pre_treatment_features()
+        covariate = self.covariate_col or spec.pre_target_col
+        if covariate is None:
+            raise ValueError("HypEx CUPED requires a pre-treatment covariate.")
         try:
             if not self.prefer_pypi:
                 raise HypExBackendUnavailable("pypi backend disabled")
             result = estimate_with_hypex_abtest(
                 data,
                 spec,
-                auxiliary_data=auxiliary_data,
-                cupac_features={spec.target_col: list(features)},
+                cuped_features={spec.target_col: covariate},
             )
             return EstimateResult(
                 estimator=self.name,
@@ -403,19 +411,27 @@ class HypExCupacEstimator:
                 n_treatment=result.n_treatment,
                 diagnostics={
                     **result.diagnostics,
-                    "pre_experiment_only": True,
-                    "cupac_features": ",".join(features),
+                    "cuped_covariate": covariate,
+                    "cuped_fit_data": "experiment_all",
                 },
             )
         except HypExBackendUnavailable as exc:
+            if self.require_pypi:
+                raise RuntimeError(
+                    f"Required PyPI HypEx CUPED backend failed: {exc}"
+                ) from exc
             from varwar.core import WrappedEstimator
-            from varwar.transforms import LinearCupacTransformer
+            from varwar.transforms import CupedTransformer
 
             local = WrappedEstimator(
-                LinearCupacTransformer(feature_cols=features, name="cupac_hypex_reference"),
+                CupedTransformer(
+                    covariate_col=covariate,
+                    fit_data="experiment_all",
+                    name="hypex_cuped_native_policy",
+                ),
                 HypExABTestEstimator(prefer_pypi=False),
                 name=self.name,
-            ).estimate(data, spec, auxiliary_data=auxiliary_data)
+            ).estimate(data, spec)
             return EstimateResult(
                 estimator=self.name,
                 effect=local.effect,
@@ -430,6 +446,81 @@ class HypExCupacEstimator:
                     **local.diagnostics,
                     "backend": "native_reference_fallback",
                     "hypex_fallback_reason": str(exc),
+                    "cuped_fit_data": "experiment_all",
+                },
+            )
+
+
+@dataclass
+class HypExCupacEstimator:
+    """PyPI HypEx temporal linear CUPAC followed by Welch inference."""
+
+    name: str = "hypex_cupac_temporal"
+    cupac_features: tuple[str, ...] | None = None
+    prefer_pypi: bool = True
+    require_pypi: bool = False
+
+    def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
+        features = self.cupac_features or spec.pre_treatment_features()
+        try:
+            if not self.prefer_pypi:
+                raise HypExBackendUnavailable("pypi backend disabled")
+            result = estimate_with_hypex_abtest(
+                data,
+                spec,
+                cupac_features={spec.target_col: list(features)},
+            )
+            return EstimateResult(
+                estimator=self.name,
+                effect=result.effect,
+                standard_error=result.standard_error,
+                statistic=result.statistic,
+                p_value=result.p_value,
+                ci_low=result.ci_low,
+                ci_high=result.ci_high,
+                n_control=result.n_control,
+                n_treatment=result.n_treatment,
+                diagnostics={
+                    **result.diagnostics,
+                    "cupac_contract": "temporal_lag2_to_lag1_then_lag1_to_current",
+                    "current_outcome_used_for_model_fit": False,
+                    "current_outcome_used_for_theta": True,
+                    "cupac_features": ",".join(features),
+                },
+            )
+        except HypExBackendUnavailable as exc:
+            if self.require_pypi:
+                raise RuntimeError(
+                    f"Required PyPI HypEx CUPAC backend failed: {exc}"
+                ) from exc
+            from varwar.core import WrappedEstimator
+            from varwar.transforms import TemporalLinearCupacTransformer
+
+            local = WrappedEstimator(
+                TemporalLinearCupacTransformer(
+                    feature_cols=features,
+                    name="cupac_temporal_linear_fallback",
+                ),
+                HypExABTestEstimator(prefer_pypi=False),
+                name=self.name,
+            ).estimate(data, spec)
+            return EstimateResult(
+                estimator=self.name,
+                effect=local.effect,
+                standard_error=local.standard_error,
+                statistic=local.statistic,
+                p_value=local.p_value,
+                ci_low=local.ci_low,
+                ci_high=local.ci_high,
+                n_control=local.n_control,
+                n_treatment=local.n_treatment,
+                diagnostics={
+                    **local.diagnostics,
+                    "backend": "native_reference_fallback",
+                    "hypex_fallback_reason": str(exc),
+                    "cupac_contract": "temporal_lag2_to_lag1_then_lag1_to_current",
+                    "current_outcome_used_for_model_fit": False,
+                    "current_outcome_used_for_theta": True,
                 },
             )
 
@@ -888,7 +979,7 @@ class StratifiedDifferenceInMeansEstimator:
         if total == 0:
             raise ValueError("No finite target values.")
 
-        components: list[tuple[float, float, float]] = []
+        components: list[tuple[float, float, float, float, float, int, int]] = []
         n_c_total = 0
         n_t_total = 0
         skipped = 0
@@ -910,8 +1001,18 @@ class StratifiedDifferenceInMeansEstimator:
                 continue
             mean_c, var_c, n_c = _mean_var_n(c)
             mean_t, var_t, n_t = _mean_var_n(t)
+            term_c = var_c / n_c
+            term_t = var_t / n_t
             components.append(
-                (weight, mean_t - mean_c, var_c / n_c + var_t / n_t)
+                (
+                    weight,
+                    mean_t - mean_c,
+                    term_c + term_t,
+                    term_c,
+                    term_t,
+                    n_c,
+                    n_t,
+                )
             )
             n_c_total += n_c
             n_t_total += n_t
@@ -926,21 +1027,49 @@ class StratifiedDifferenceInMeansEstimator:
                 f"{skipped} strata lack two finite observations in both groups."
             )
 
-        used_weight = sum(weight for weight, _, _ in components)
+        used_weight = sum(component[0] for component in components)
         if used_weight <= 0.0:
             raise ValueError("Used stratum weights must have a positive sum.")
         if self.stratum_weights is not None and skipped == 0:
             if not math.isclose(used_weight, 1.0, rel_tol=1e-9, abs_tol=1e-12):
                 raise ValueError("Reference stratum weights must sum to one.")
         normalized = [
-            (weight / used_weight, stratum_effect, stratum_variance)
-            for weight, stratum_effect, stratum_variance in components
+            (
+                weight / used_weight,
+                stratum_effect,
+                stratum_variance,
+                term_c,
+                term_t,
+                n_c,
+                n_t,
+            )
+            for (
+                weight,
+                stratum_effect,
+                stratum_variance,
+                term_c,
+                term_t,
+                n_c,
+                n_t,
+            ) in components
         ]
-        effect = sum(weight * value for weight, value, _ in normalized)
-        variance = sum(weight**2 * value for weight, _, value in normalized)
+        effect = sum(weight * value for weight, value, *_ in normalized)
+        variance = sum(
+            weight**2 * stratum_variance
+            for weight, _, stratum_variance, *_ in normalized
+        )
 
         se = math.sqrt(variance)
-        df = float(max(n_c_total + n_t_total - 2 * used, 1))
+        df_denominator = sum(
+            (weight**2 * term_c) ** 2 / (n_c - 1)
+            + (weight**2 * term_t) ** 2 / (n_t - 1)
+            for weight, _, _, term_c, term_t, n_c, n_t in normalized
+        )
+        df = (
+            float(variance**2 / df_denominator)
+            if df_denominator > 0.0
+            else float(max(n_c_total + n_t_total - 2 * used, 1))
+        )
         return _build_result(
             self.name,
             effect,
@@ -954,6 +1083,7 @@ class StratifiedDifferenceInMeansEstimator:
                 "strata_skipped": skipped,
                 "sparse_policy": self.sparse_policy,
                 "used_weight": used_weight,
+                "degrees_of_freedom": df,
                 "weight_source": (
                     "reference" if self.stratum_weights is not None else "observed_sample"
                 ),

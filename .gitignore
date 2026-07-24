@@ -79,3 +79,7 @@ dmypy.json
 
 # Codex scratch
 .codex_tmp/
+.workbook_tmp/
+
+# Local benchmark smoke outputs
+results/pipeline_race_v2_smoke_*/

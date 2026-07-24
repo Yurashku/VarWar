@@ -19,7 +19,6 @@ from varwar import (
 )
 from varwar.synthetic import (
     SyntheticConfig,
-    generate_historical_controls,
     generate_synthetic_ab,
 )
 
@@ -53,10 +52,6 @@ def main() -> None:
                 seed=seed,
             )
             experiment = generate_synthetic_ab(config)
-            reference = generate_historical_controls(config)
-            holdout = generate_historical_controls(
-                SyntheticConfig(n=config.n, effect=0.0, seed=seed + 50_000)
-            )
             common = dict(
                 category_cols=category_cols,
                 reference_target_col="y_pre",
@@ -70,20 +65,20 @@ def main() -> None:
                 random_state=seed,
             )
             reducers = {
-                "genetic_strata_ab": GeneticStrataReducer(
+                "genetic_strata_reducer": GeneticStrataReducer(
                     objective=ABProportionalVarianceObjective(),
                     **common,
                 ),
             }
             result = run_stratification_race(
                 experiment,
-                reference,
+                experiment,
                 spec,
                 category_cols=category_cols,
                 reference_target_col="y_pre",
                 n_strata=int(settings["n_strata"]),
                 reducers=reducers,
-                validation_data=holdout,
+                validation_data=None,
                 true_effect=float(effect),
                 random_state=seed,
             )

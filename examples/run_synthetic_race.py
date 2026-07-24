@@ -8,13 +8,12 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from varwar.benchmark import run_estimator_race
 from varwar.core import ExperimentSpec
-from varwar.synthetic import SyntheticConfig, generate_historical_controls, generate_synthetic_ab
+from varwar.synthetic import SyntheticConfig, generate_synthetic_ab
 
 
 def main() -> None:
     config = SyntheticConfig(n=5000, effect=0.25, seed=42)
     data = generate_synthetic_ab(config)
-    historical = generate_historical_controls(config)
     spec = ExperimentSpec(
         covariate_cols=("y_pre", "x1", "x2"),
         pre_treatment_cols=("y_pre", "x1", "x2"),
@@ -28,8 +27,21 @@ def main() -> None:
         instrument_col="assigned",
         received_treatment_col="received",
     )
-    results = run_estimator_race(data, spec, auxiliary_data=historical)
-    print(results.to_string(index=False))
+    results = run_estimator_race(data, spec)
+    columns = [
+        "estimator",
+        "status",
+        "effect",
+        "standard_error",
+        "p_value",
+        "ci_low",
+        "ci_high",
+        "n_control",
+        "n_treatment",
+        "runtime_ms",
+        "diag_backend",
+    ]
+    print(results.reindex(columns=columns).to_string(index=False))
 
 
 if __name__ == "__main__":

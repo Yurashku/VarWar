@@ -22,12 +22,13 @@ The complete status registry is [`methods/all_methods.md`](methods/all_methods.m
 | `regression_adjustment` | estimator | OLS treatment coefficient with HC1 standard error. |
 | `ml_rate` | estimator | Cross-fitted ridge nuisance prediction followed by robust regression adjustment. |
 | `nearest_neighbor_matching` | estimator | Covariate nearest-neighbor ATT estimate for matching baselines. |
-| `cuped+hypex_ab` | wrapper + baseline | CUPED target adjustment followed by `hypex_ab`. |
-| `hypex_cupac` | reference | PyPI HypEx CUPAC reference/parity slot; fallback is local linear CUPAC A. |
-| `sklearn_cupac_A+hypex_ab` | wrapper + baseline | RnD6 A: pre-treatment features. |
-| `sklearn_cupac_A_plus_B+hypex_ab` | wrapper + baseline | RnD6 A+B: add expert-safe in-time features. |
-| `sklearn_cupac_A_plus_B_plus_C+hypex_ab` | wrapper + baseline | RnD6 A+B+C: add balance-gated in-time features. |
-| `winsorized+hypex_ab` | wrapper + baseline | Winsorized target followed by `hypex_ab`. |
+| `hypex_cuped` | integration pipeline | Native PyPI HypEx CUPED followed by its A/B inference. |
+| `cuped_control__hypex_ab` | pipeline | CUPED fitted on current control followed by `hypex_ab`. |
+| `hypex_cupac_temporal` | integration pipeline | PyPI HypEx temporal linear CUPAC parity slot. |
+| `cupac_linear_A__hypex_ab` | pipeline | Temporal CUPAC on pre-treatment lag2/lag1 features. |
+| `cupac_linear_A_plus_B__hypex_ab` | pipeline | CUPAC A followed by a separate control-fitted B stage. |
+| `cupac_linear_A_plus_B_plus_C__hypex_ab` | pipeline | A and B followed by a separately gated C stage. |
+| `winsorized__hypex_ab` | changed-metric pipeline | Control-defined winsorization followed by `hypex_ab`. |
 | `ratio_delta` | estimator | Ratio metric difference by delta method. |
 | `stratified_mean_diff` | estimator | Weighted stratum-level differences. |
 | `variance_weighted_stratified` | estimator | Stratum estimates combined by inverse variance. |
@@ -52,7 +53,8 @@ The complete status registry is [`methods/all_methods.md`](methods/all_methods.m
 | `anti_nuclear_ks_test` | The table name is not enough to identify the exact statistic. |
 | `hypex_matcher` | Requires internal HypEx matcher API and matching policy. |
 | `calibration_reweighting` | Needs constraints, calibration totals, and variance estimator policy. |
-| `optimal_transport_check` | Better treated as a distribution diagnostic before becoming an effect estimator. |
+| `optimal_transport_homogeneity_test` | Needs a statistic, calibration policy, and scalable solver contract. |
+| `optimal_transport_check` | Excluded ambiguous historical label. |
 | `optimal_transport_matching` | Needs matching distance, regularization, and inference policy. |
 | `bayesian_cupac` | Target-transformer placeholder; needs a Bayesian model and posterior decision rule. |
 | `nonlinear_cupac` | Selected target-transformer candidate; needs an honest model and tuning contract. |

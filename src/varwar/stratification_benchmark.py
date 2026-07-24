@@ -16,29 +16,18 @@ from varwar.estimators import (
     HypExCupacEstimator,
     StratifiedDifferenceInMeansEstimator,
 )
+from varwar.feature_sets import CupacFeaturePolicy, default_cupac_feature_sets
 from varwar.stratification import (
     ABProportionalVarianceObjective,
     AtomicStrataSummary,
     GeneticStrataReducer,
     aggregate_atomic_strata,
 )
-from varwar.transforms import CupedTransformer, LinearCupacTransformer
+from varwar.transforms import CupedTransformer, ZonedCupacTransformer
 
 
-def _cupac_variants(spec: ExperimentSpec) -> list[tuple[str, tuple[str, ...]]]:
-    def unique(columns: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(dict.fromkeys(columns))
-
-    a = unique(spec.pre_treatment_features())
-    variants = [
-        ("sklearn_cupac_A", a),
-        ("sklearn_cupac_A_plus_B", unique(a + spec.expert_safe_in_time_cols)),
-        (
-            "sklearn_cupac_A_plus_B_plus_C",
-            unique(a + spec.expert_safe_in_time_cols + spec.gated_in_time_cols),
-        ),
-    ]
-    return [(name, features) for name, features in variants if features]
+def _cupac_variants(spec: ExperimentSpec) -> list[CupacFeaturePolicy]:
+    return default_cupac_feature_sets(spec)
 
 
 def _apply_mapping(
@@ -189,8 +178,10 @@ def run_stratification_race(
 ) -> pd.DataFrame:
     """Сравнить design preprocessors отдельно от обычной гонки эстиматоров.
 
-    Reducer всегда обучается на ``reference_data``. Экспериментальный target
-    используется только после назначения страт базовым estimator-ом.
+    Reducer обучается на ``reference_data`` только по
+    ``reference_target_col``. В одно-датасетной схеме сюда передаётся тот же
+    frame, что и в ``data``, а ``reference_target_col`` указывает на pre-target.
+    Текущий экспериментальный target не используется при назначении страт.
     """
 
     if n_strata < 1:
@@ -206,18 +197,20 @@ def run_stratification_race(
     if include_target_transformers:
         baseline_estimators.extend(
             [
-                WrappedEstimator(CupedTransformer(), HypExABTestEstimator()),
+                WrappedEstimator(
+                    CupedTransformer(fit_data="experiment_control"),
+                    HypExABTestEstimator(),
+                    name="cuped_control__hypex_ab",
+                ),
                 HypExCupacEstimator(),
             ]
         )
-        for transformer_name, features in _cupac_variants(spec):
+        for policy in _cupac_variants(spec):
             baseline_estimators.append(
                 WrappedEstimator(
-                    LinearCupacTransformer(
-                        feature_cols=features,
-                        name=transformer_name,
-                    ),
+                    ZonedCupacTransformer(policy=policy),
                     HypExABTestEstimator(),
+                    name=f"{policy.method_id}__hypex_ab",
                 )
             )
     for estimator in baseline_estimators:
@@ -267,7 +260,7 @@ def run_stratification_race(
         try:
             prepared = _apply_mapping(data, summary, labels, output_col)
             row = _estimate_row(
-                f"{name}+stratified_mean_diff",
+                f"{name}__stratified_mean_diff",
                 name,
                 "ab_proportional",
                 StratifiedDifferenceInMeansEstimator(),
@@ -287,7 +280,7 @@ def run_stratification_race(
             )
         except Exception as exc:
             row = {
-                "pipeline": f"{name}+stratified_mean_diff",
+                "pipeline": f"{name}__stratified_mean_diff",
                 "preprocessor": name,
                 "objective": "ab_proportional",
                 "estimator": "stratified_mean_diff",
@@ -307,7 +300,7 @@ def run_stratification_race(
 
     if reducers is None:
         reducers = {
-            "genetic_strata_ab": GeneticStrataReducer(
+            "genetic_strata_reducer": GeneticStrataReducer(
                 category_cols=category_cols,
                 reference_target_col=reference_target_col,
                 n_strata=n_strata,
@@ -341,7 +334,7 @@ def run_stratification_race(
         if fit_error is not None or reducer.result_ is None or prepared is None:
             rows.append(
                 {
-                    "pipeline": f"{name}+stratified_mean_diff",
+                    "pipeline": f"{name}__stratified_mean_diff",
                     "preprocessor": name,
                     "objective": reducer.objective.name,
                     "estimator": "stratified_mean_diff",
@@ -379,24 +372,41 @@ def run_stratification_race(
         if include_target_transformers:
             estimators.append(
                 WrappedEstimator(
-                    CupedTransformer(),
+                    CupedTransformer(fit_data="experiment_control"),
                     stratified_estimator(),
+                    name="cuped_control__stratified",
                 )
             )
-            for transformer_name, features in _cupac_variants(spec):
+            for policy in _cupac_variants(spec):
                 estimators.append(
                     WrappedEstimator(
-                        LinearCupacTransformer(
-                            feature_cols=features,
-                            name=transformer_name,
-                        ),
+                        ZonedCupacTransformer(policy=policy),
                         stratified_estimator(),
+                        name=f"{policy.method_id}__stratified",
                     )
                 )
         for estimator in estimators:
+            if name == "genetic_strata_reducer":
+                canonical_pipeline = {
+                    "stratified_mean_diff": "ga_strata__stratified",
+                    "cuped_control__stratified": (
+                        "ga_strata__cuped_control__stratified"
+                    ),
+                    "cupac_linear_A__stratified": (
+                        "ga_strata__cupac_linear_A__stratified"
+                    ),
+                    "cupac_linear_A_plus_B__stratified": (
+                        "ga_strata__cupac_linear_A_plus_B__stratified"
+                    ),
+                    "cupac_linear_A_plus_B_plus_C__stratified": (
+                        "ga_strata__cupac_linear_A_plus_B_plus_C__stratified"
+                    ),
+                }.get(estimator.name, f"ga_strata__{estimator.name}")
+            else:
+                canonical_pipeline = f"{name}__{estimator.name}"
             rows.append(
                 _estimate_row(
-                    f"{name}+{estimator.name}",
+                    canonical_pipeline,
                     name,
                     reducer.objective.name,
                     estimator,

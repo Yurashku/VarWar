@@ -8,11 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from varwar import ExperimentSpec, NumericFeatureBinner, run_stratification_race
-from varwar.synthetic import (
-    SyntheticConfig,
-    generate_historical_controls,
-    generate_synthetic_ab,
-)
+from varwar.synthetic import SyntheticConfig, generate_synthetic_ab
 
 
 def main() -> None:
@@ -27,26 +23,13 @@ def main() -> None:
         seed=int(synthetic["seed"]),
     )
     experiment = generate_synthetic_ab(base_config)
-    reference = generate_historical_controls(base_config)
-    holdout = generate_historical_controls(
-        SyntheticConfig(
-            n=base_config.n,
-            effect=0.0,
-            covariate_signal=base_config.covariate_signal,
-            noise_scale=base_config.noise_scale,
-            seed=base_config.seed + 1,
-            heavy_tail=base_config.heavy_tail,
-        )
-    )
 
     binning = raw["binning"]
     binner = NumericFeatureBinner(
         columns=tuple(binning["columns"]),
         strategy=str(binning["strategy"]),
         n_bins=int(binning["n_bins"]),
-    ).fit(reference)
-    reference = binner.augment(reference)
-    holdout = binner.augment(holdout)
+    ).fit(experiment)
     experiment = binner.augment(experiment)
 
     race = raw["stratification"]
@@ -58,14 +41,14 @@ def main() -> None:
     )
     results = run_stratification_race(
         experiment,
-        reference,
+        experiment,
         spec,
         category_cols=tuple(race["category_cols"]),
         reference_target_col="y_pre",
         n_strata=int(race["n_strata"]),
         measure_memory=bool(race["measure_memory"]),
         random_state=int(race["random_state"]),
-        validation_data=holdout,
+        validation_data=None,
         true_effect=base_config.effect,
     )
     columns = [
