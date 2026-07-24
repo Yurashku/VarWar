@@ -81,5 +81,8 @@ dmypy.json
 .codex_tmp/
 .workbook_tmp/
 
+# Microsoft Office lock files
+~$*
+
 # Local benchmark smoke outputs
 results/pipeline_race_v2_smoke_*/
