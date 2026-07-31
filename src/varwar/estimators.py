@@ -700,6 +700,90 @@ class RandomizedTTestEstimator:
         )
 
 
+@dataclass
+class RandomizedWeightedMeanDiffEstimator:
+    """Оценивает разность средних с воспроизводимыми ёжиковыми весами.
+
+    В каждой экспериментальной группе наблюдения сначала перемешиваются с
+    контролируемым seed. Затем к ним применяются те же знакопеременные
+    коэффициенты, что и в ``randomized_t_test``, но после нормировки до суммы
+    единица. Поэтому точечная оценка, стандартная ошибка, p-value и доверительный
+    интервал относятся к одной и той же взвешенной разности средних:
+
+    ``mu_g = sum_i w_gi * Y_gi``, где ``sum_i w_gi = 1``.
+
+    При весах, не зависящих от target, оценка сохраняет математическое ожидание
+    среднего группы. Данные не изменяются на месте. Если задан ``unit_col``,
+    он используется для стабильного порядка перед перемешиванием; иначе при
+    уникальном индексе сначала используется индекс DataFrame.
+    """
+
+    name: str = "randomized_weighted_mean_diff"
+    seed: int = 20260731
+    shuffle: bool = True
+
+    def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
+        if spec.unit_col is not None:
+            require_columns(data, [spec.unit_col])
+            ordered = data.sort_values(spec.unit_col, kind="mergesort")
+            order_policy = "stable_unit_sort_then_seeded_shuffle"
+        elif data.index.is_unique:
+            ordered = data.sort_index(kind="stable")
+            order_policy = "stable_index_sort_then_seeded_shuffle"
+        else:
+            ordered = data
+            order_policy = "input_order_then_seeded_shuffle"
+
+        control, treatment = _group_arrays(ordered, spec)
+        if control.size < 2 or treatment.size < 2:
+            raise ValueError("Both groups need at least two finite observations.")
+
+        rng = np.random.default_rng(self.seed)
+        if self.shuffle:
+            control = control[rng.permutation(control.size)]
+            treatment = treatment[rng.permutation(treatment.size)]
+
+        raw_weights_c = _hedgehog_weights(control.size)
+        raw_weights_t = _hedgehog_weights(treatment.size)
+        sum_weights_c = float(raw_weights_c.sum())
+        sum_weights_t = float(raw_weights_t.sum())
+        if sum_weights_c == 0.0 or sum_weights_t == 0.0:
+            raise ValueError("Hedgehog weights must have non-zero sums.")
+        weights_c = raw_weights_c / sum_weights_c
+        weights_t = raw_weights_t / sum_weights_t
+
+        mean_c, var_c, n_c = _mean_var_n(control)
+        mean_t, var_t, n_t = _mean_var_n(treatment)
+        effect = float(weights_t @ treatment - weights_c @ control)
+        term_c = var_c * float(weights_c @ weights_c)
+        term_t = var_t * float(weights_t @ weights_t)
+        variance = term_c + term_t
+        se = math.sqrt(max(variance, 0.0))
+        denominator = (term_c**2 / (n_c - 1)) + (term_t**2 / (n_t - 1))
+        df = variance**2 / denominator if denominator > 0.0 else math.nan
+        return _build_result(
+            self.name,
+            effect,
+            se,
+            df,
+            n_c,
+            n_t,
+            spec.alpha,
+            {
+                "weights": "normalized_hedgehog",
+                "seed": self.seed,
+                "shuffle": self.shuffle,
+                "order_policy": order_policy,
+                "weight_sum_control": sum_weights_c,
+                "weight_sum_treatment": sum_weights_t,
+                "effective_n_control": float(1.0 / (weights_c @ weights_c)),
+                "effective_n_treatment": float(1.0 / (weights_t @ weights_t)),
+                "unweighted_mean_difference": float(mean_t - mean_c),
+                "estimation_target": "difference_of_normalized_hedgehog_weighted_means",
+            },
+        )
+
+
 def _hedgehog_weights(n: int) -> np.ndarray:
     if n <= 0:
         return np.empty(0, dtype=float)
@@ -770,6 +854,29 @@ def _mean_abs_cross(left: np.ndarray, right: np.ndarray) -> float:
     return float(distances.sum() / (left.size * right_sorted.size))
 
 
+def _permutation_mean_differences(
+    control: np.ndarray,
+    treatment: np.ndarray,
+    n_resamples: int,
+    seed: int,
+) -> np.ndarray:
+    """Return a bounded-memory Monte Carlo randomization distribution."""
+
+    if n_resamples < 1:
+        raise ValueError("n_resamples must be positive.")
+    pooled = np.concatenate([control, treatment])
+    n_control = int(control.size)
+    rng = np.random.default_rng(seed)
+    shuffled = pooled.copy()
+    effects = np.empty(n_resamples, dtype=float)
+    for index in range(n_resamples):
+        rng.shuffle(shuffled)
+        effects[index] = float(
+            shuffled[n_control:].mean() - shuffled[:n_control].mean()
+        )
+    return effects
+
+
 @dataclass
 class PermutationMeanTestEstimator:
     name: str = "permutation_mean_test"
@@ -781,18 +888,15 @@ class PermutationMeanTestEstimator:
         if control.size < 2 or treatment.size < 2:
             raise ValueError("Both groups need at least two finite observations.")
         observed = float(treatment.mean() - control.mean())
-        pooled = np.concatenate([control, treatment])
         n_control = int(control.size)
         n_treatment = int(treatment.size)
-        rng = np.random.default_rng(self.seed)
-        shuffled = pooled.copy()
-        extreme = 0
-        permuted_effects = np.empty(self.n_resamples, dtype=float)
-        for i in range(self.n_resamples):
-            rng.shuffle(shuffled)
-            perm_effect = float(shuffled[n_control:].mean() - shuffled[:n_control].mean())
-            permuted_effects[i] = perm_effect
-            extreme += abs(perm_effect) >= abs(observed)
+        permuted_effects = _permutation_mean_differences(
+            control,
+            treatment,
+            self.n_resamples,
+            self.seed,
+        )
+        extreme = int(np.count_nonzero(np.abs(permuted_effects) >= abs(observed)))
         p_value = (extreme + 1.0) / (self.n_resamples + 1.0)
         se = float(permuted_effects.std(ddof=1)) if self.n_resamples > 1 else math.nan
         statistic = safe_divide(observed, se)
@@ -807,6 +911,110 @@ class PermutationMeanTestEstimator:
             n_control=n_control,
             n_treatment=n_treatment,
             diagnostics={"n_resamples": self.n_resamples},
+        )
+
+
+@dataclass
+class PermutationMeanDiffEstimator:
+    """Estimate a mean difference with permutation-calibrated inference.
+
+    The confidence interval is obtained by inverting the two-sided
+    randomization test: null-distribution quantiles are reflected around the
+    observed effect. This is justified for exchangeable outcomes under the
+    sharp null and, for an effect interval, under a constant additive effect.
+    """
+
+    name: str = "permutation_mean_diff"
+    n_resamples: int = 999
+    seed: int = 20260709
+
+    def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
+        control, treatment = _group_arrays(data, spec)
+        mean_c, _, n_c = _mean_var_n(control)
+        mean_t, _, n_t = _mean_var_n(treatment)
+        if n_c < 2 or n_t < 2:
+            raise ValueError("Both groups need at least two finite observations.")
+
+        effect = mean_t - mean_c
+        permuted = _permutation_mean_differences(
+            control,
+            treatment,
+            self.n_resamples,
+            self.seed,
+        )
+        extreme = int(np.count_nonzero(np.abs(permuted) >= abs(effect)))
+        permutation_p = (extreme + 1.0) / (self.n_resamples + 1.0)
+        se = float(permuted.std(ddof=1))
+        lower_null, upper_null = np.quantile(
+            permuted,
+            [spec.alpha / 2.0, 1.0 - spec.alpha / 2.0],
+        )
+        return EstimateResult(
+            estimator=self.name,
+            effect=effect,
+            standard_error=se,
+            statistic=safe_divide(effect, se),
+            p_value=permutation_p,
+            ci_low=float(effect - upper_null),
+            ci_high=float(effect - lower_null),
+            n_control=n_c,
+            n_treatment=n_t,
+            diagnostics={
+                "n_resamples": self.n_resamples,
+                "seed": self.seed,
+                "p_value_method": "permutation_randomization",
+                "ci_method": "permutation_test_inversion_shifted",
+                "exchangeability_assumption": "sharp_null_or_constant_additive_effect",
+            },
+        )
+
+
+@dataclass
+class BootstrapMeanDiffEstimator:
+    """Bootstrap mean-difference estimator with percentile confidence interval."""
+
+    name: str = "bootstrap_mean_diff"
+    n_resamples: int = 999
+    seed: int = 20260709
+
+    def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
+        control, treatment = _group_arrays(data, spec)
+        if control.size < 2 or treatment.size < 2:
+            raise ValueError("Both groups need at least two finite observations.")
+        if self.n_resamples < 2:
+            raise ValueError("n_resamples must be at least two.")
+
+        effect = float(treatment.mean() - control.mean())
+        rng = np.random.default_rng(self.seed)
+        bootstrap_effects = np.empty(self.n_resamples, dtype=float)
+        for index in range(self.n_resamples):
+            control_indices = rng.integers(0, control.size, size=control.size)
+            treatment_indices = rng.integers(0, treatment.size, size=treatment.size)
+            bootstrap_effects[index] = float(
+                treatment[treatment_indices].mean()
+                - control[control_indices].mean()
+            )
+        se = float(bootstrap_effects.std(ddof=1))
+        lower, upper = np.quantile(
+            bootstrap_effects,
+            [spec.alpha / 2.0, 1.0 - spec.alpha / 2.0],
+        )
+        return EstimateResult(
+            estimator=self.name,
+            effect=effect,
+            standard_error=se,
+            statistic=safe_divide(effect, se),
+            p_value=normal_two_sided_p(safe_divide(effect, se)),
+            ci_low=float(lower),
+            ci_high=float(upper),
+            n_control=int(control.size),
+            n_treatment=int(treatment.size),
+            diagnostics={
+                "n_resamples": self.n_resamples,
+                "seed": self.seed,
+                "ci_method": "percentile_bootstrap",
+                "p_value_method": "normal_approximation_from_bootstrap_se",
+            },
         )
 
 

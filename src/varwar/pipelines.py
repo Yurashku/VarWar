@@ -6,13 +6,22 @@ from typing import Any, Mapping
 
 from varwar.core import ExperimentSpec, WrappedEstimator
 from varwar.estimators import (
+    BootstrapMeanDiffEstimator,
     DifferenceInMeansEstimator,
     HypExABTestEstimator,
     HypExCupacEstimator,
     HypExCupedEstimator,
     MLRateEstimator,
+    NearestNeighborMatchingEstimator,
+    PermutationMeanDiffEstimator,
+    RatioDeltaMethodEstimator,
+    RandomizedWeightedMeanDiffEstimator,
     RegressionAdjustmentEstimator,
     StratifiedDifferenceInMeansEstimator,
+    TrimmedMeanEstimator,
+    VarianceWeightedStratifiedEstimator,
+    WaldEstimator,
+    WinsorizedMeanEstimator,
 )
 from varwar.feature_sets import CupacFeaturePolicy, default_cupac_feature_sets
 from varwar.transforms import (
@@ -117,6 +126,58 @@ def build_full_traffic_pipelines(
                 "welch",
             ),
             _hypex(prefer_pypi_hypex),
+        ),
+        PipelineCandidate(
+            PipelineDefinition(
+                "pooled_mean_diff",
+                "Разность средних с общей дисперсией",
+                ("pooled_mean_diff",),
+                "ATE",
+                PipelineTier.EXPLORATORY,
+                "Текущие treatment и target; диагностический legacy-контур.",
+                "Требует допущения равенства дисперсий.",
+                "welch",
+            ),
+            DifferenceInMeansEstimator(name="pooled_mean_diff", variance="pooled"),
+        ),
+        PipelineCandidate(
+            PipelineDefinition(
+                "randomized_weighted_mean_diff",
+                "Воспроизводимая взвешенная разность средних",
+                ("randomized_weighted_mean_diff",),
+                "Взвешенный ATE",
+                PipelineTier.EXPLORATORY,
+                "Текущие treatment и target; фиксированный seed.",
+                "Цель задаётся механизмом весов.",
+                "welch",
+            ),
+            RandomizedWeightedMeanDiffEstimator(),
+        ),
+        PipelineCandidate(
+            PipelineDefinition(
+                "permutation_mean_diff",
+                "Перестановочная оценка разности средних",
+                ("permutation_mean_diff",),
+                "ATE",
+                PipelineTier.EXPLORATORY,
+                "Только текущие treatment и target.",
+                "Permutation p-value и interval через инверсию permutation-теста.",
+                "welch",
+            ),
+            PermutationMeanDiffEstimator(n_resamples=499),
+        ),
+        PipelineCandidate(
+            PipelineDefinition(
+                "bootstrap_mean_diff",
+                "Bootstrap-оценка разности средних",
+                ("bootstrap_mean_diff",),
+                "ATE",
+                PipelineTier.EXPLORATORY,
+                "Только текущие treatment и target.",
+                "Percentile bootstrap interval.",
+                "welch",
+            ),
+            BootstrapMeanDiffEstimator(n_resamples=499),
         ),
         PipelineCandidate(
             PipelineDefinition(
@@ -264,6 +325,45 @@ def build_full_traffic_pipelines(
             ),
             PipelineCandidate(
                 PipelineDefinition(
+                    "nearest_neighbor_matching",
+                    "Matching ближайшего соседа",
+                    ("nearest_neighbor_matching",),
+                    "ATT",
+                    PipelineTier.OBSERVATIONAL,
+                    "Текущий target и числовые pre-treatment ковариаты.",
+                    "Не сравнивать напрямую с ATE-пайплайнами.",
+                    None,
+                ),
+                NearestNeighborMatchingEstimator(),
+            ),
+            PipelineCandidate(
+                PipelineDefinition(
+                    "trimmed_mean_diff",
+                    "Разность усечённых средних",
+                    ("trimmed_mean_diff",),
+                    "Усечённая разность средних",
+                    PipelineTier.CHANGED_METRIC,
+                    "Только текущие treatment и target.",
+                    "Изменяет target и состав наблюдений.",
+                    None,
+                ),
+                TrimmedMeanEstimator(),
+            ),
+            PipelineCandidate(
+                PipelineDefinition(
+                    "winsorized_mean_diff",
+                    "Разность винзоризированных средних",
+                    ("winsorized_mean_diff",),
+                    "Винзоризированная разность средних",
+                    PipelineTier.CHANGED_METRIC,
+                    "Только текущие treatment и target.",
+                    "Историческая форма; в новых пайплайнах предпочтителен transformer.",
+                    None,
+                ),
+                WinsorizedMeanEstimator(),
+            ),
+            PipelineCandidate(
+                PipelineDefinition(
                     "winsorized__hypex_ab",
                     "Винзоризация -> HypEx A/B",
                     ("winsorized", "hypex_ab"),
@@ -281,6 +381,38 @@ def build_full_traffic_pipelines(
             ),
         ]
     )
+    if spec.numerator_col and spec.denominator_col:
+        candidates.append(
+            PipelineCandidate(
+                PipelineDefinition(
+                    "ratio_delta",
+                    "Delta-оценка ratio-метрики",
+                    ("ratio_delta",),
+                    "Разность отношений средних",
+                    PipelineTier.CHANGED_METRIC,
+                    "Нужны numerator_col и denominator_col.",
+                    "Сравнивается только с ratio-пайплайнами.",
+                    None,
+                ),
+                RatioDeltaMethodEstimator(),
+            )
+        )
+    if spec.instrument_col and spec.received_treatment_col:
+        candidates.append(
+            PipelineCandidate(
+                PipelineDefinition(
+                    "wald_late",
+                    "Оценка Вальда для LATE",
+                    ("wald_late",),
+                    "LATE",
+                    PipelineTier.OBSERVATIONAL,
+                    "Нужны instrument_col и received_treatment_col.",
+                    "Сравнивается только с IV-пайплайнами.",
+                    None,
+                ),
+                WaldEstimator(),
+            )
+        )
     return candidates
 
 
@@ -334,6 +466,19 @@ def build_stratified_pipelines(
                 base(),
                 name="ga_strata__cuped_control__stratified",
             ),
+        ),
+        PipelineCandidate(
+            PipelineDefinition(
+                "variance_weighted_stratified",
+                "Обратное дисперсионное взвешивание страт",
+                ("variance_weighted_stratified",),
+                "Precision-weighted effect",
+                PipelineTier.EXPLORATORY,
+                "Нужна колонка stratum_col; малые страты пропускаются.",
+                "Не является общим ATE при неоднородном эффекте.",
+                "ga_strata__stratified",
+            ),
+            VarianceWeightedStratifiedEstimator(),
         ),
     ]
     for method_id, label, tier in (
