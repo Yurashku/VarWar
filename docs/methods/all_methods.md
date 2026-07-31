@@ -19,18 +19,21 @@
 | --- | --- | --- | --- | --- |
 | E01 | `welch_mean_diff` | Разность средних с тестом Уэлча | реализован | основной ATE baseline |
 | E02 | `hypex_ab` | A/B-тест HypEx, по умолчанию Welch | интеграция | сверка с PyPI HypEx |
-| E03 | `regression_adjustment` | Регрессионная корректировка | реализован | ATE с HC1 inference |
-| E04 | `ml_rate` | ML-RATE | реализован | cross-fitted ковариатная корректировка |
-| E05 | `stratified_mean_diff` | Стратифицированная разность средних | реализован | итоговый estimator после подготовки страт |
-| E06 | `variance_weighted_stratified` | Обратное дисперсионное взвешивание страт | реализован | отдельный precision-weighted estimand |
-| E07 | `nearest_neighbor_matching` | Matching ближайшего соседа | реализован | наблюдательный ATT baseline |
-| E08 | `ratio_delta` | Delta-оценка ratio-of-means | реализован | отдельный контур ratio-метрик |
-| E09 | `wald_late` | Оценка Уолда для LATE | реализован | отдельный IV-контур |
-| E10 | `calibration_reweighting` | Калибровочное перевзвешивание | нужна спецификация | нужны population totals |
-| E11 | `optimal_transport_matching` | Matching оптимальным транспортом | нужна спецификация | отдельный наблюдательный контур ATT/ATC |
-| E12 | `pooled_mean_diff` | Разность средних с общей дисперсией | legacy | диагностика допущения равных дисперсий |
-| E13 | `trimmed_mean_diff` | Разность усечённых средних | legacy | заменяется композицией трансформации |
-| E14 | `winsorized_mean_diff` | Разность винзоризированных средних | legacy | заменяется композицией трансформации |
+| E03 | `randomized_weighted_mean_diff` | Разность нормированных ёжиковых средних | реализован | взвешенный ATE с seed и согласованным inference |
+| E04 | `permutation_mean_diff` | Перестановочная оценка разности средних | реализован | permutation p-value и Welch CI |
+| E05 | `bootstrap_mean_diff` | Bootstrap-оценка разности средних | реализован | bootstrap SE и percentile CI |
+| E06 | `regression_adjustment` | Регрессионная корректировка | реализован | ATE с HC1 inference |
+| E07 | `ml_rate` | ML-RATE | реализован | cross-fitted ковариатная корректировка |
+| E08 | `stratified_mean_diff` | Стратифицированная разность средних | реализован | итоговый estimator после подготовки страт |
+| E09 | `variance_weighted_stratified` | Обратное дисперсионное взвешивание страт | реализован | отдельный precision-weighted estimand |
+| E10 | `nearest_neighbor_matching` | Matching ближайшего соседа | реализован | наблюдательный ATT baseline |
+| E11 | `ratio_delta` | Delta-оценка ratio-of-means | реализован | отдельный контур ratio-метрик |
+| E12 | `wald_late` | Оценка Уолда для LATE | реализован | отдельный IV-контур |
+| E13 | `calibration_reweighting` | Калибровочное перевзвешивание | нужна спецификация | нужны population totals |
+| E14 | `optimal_transport_matching` | Matching оптимальным транспортом | нужна спецификация | отдельный наблюдательный контур ATT/ATC |
+| E15 | `pooled_mean_diff` | Разность средних с общей дисперсией | legacy | диагностика допущения равных дисперсий |
+| E16 | `trimmed_mean_diff` | Разность усечённых средних | legacy | заменяется композицией трансформации |
+| E17 | `winsorized_mean_diff` | Разность винзоризированных средних | legacy | заменяется композицией трансформации |
 
 ## HypothesisTest
 

@@ -27,36 +27,36 @@ Fit использует historical/pre-experiment target. Mapping после о
 
 Для атома `j` сохраняются только:
 
-\[
+$$
 N_j,\qquad \mu_j,\qquad M_{2j}=\sum_i(Y_i-\mu_j)^2.
-\]
+$$
 
 Для объединения `g`:
 
-\[
+$$
 N_g=\sum_{j\in g}N_j,\qquad
 \mu_g=\frac{\sum_{j\in g}N_j\mu_j}{N_g},
-\]
+$$
 
-\[
+$$
 M_{2g}=\sum_{j\in g}\left[M_{2j}+N_j(\mu_j-\mu_g)^2\right],
 \qquad S_g^2=\frac{M_{2g}}{N_g-1}.
-\]
+$$
 
 Исходные строки и списки ID после агрегации не хранятся.
 
 ## Objective для естественного A/B-трафика
 
-\[
+$$
 J_{AB}=\sum_g\frac{N_g}{N}S_g^2.
-\]
+$$
 
 При плановом sample size `n` и treatment share `p` приближённая variance
 стратифицированной оценки эффекта:
 
-\[
+$$
 Var(\hat\tau)\approx\frac{J_{AB}}{n p(1-p)}.
-\]
+$$
 
 Это основной режим `ABProportionalVarianceObjective`.
 

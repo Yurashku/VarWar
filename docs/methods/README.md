@@ -35,6 +35,7 @@ CUPAC A, A+B и A+B+C считаются отдельными `TargetTransformer
 - [Адаптеры признаков](feature_adapters.md)
 - [Коррекции статистического вывода](inference_corrections.md)
 - [Готовые конвейеры](pipelines.md)
+- [Общий отчёт по методам с формулами](methods_report_ru.md)
 
 ## Правило безопасности данных
 

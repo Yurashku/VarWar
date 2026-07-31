@@ -9,6 +9,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import pandas as pd
 
+from varwar.core import ExperimentSpec
+
 from varwar.pipeline_benchmark import (
     SyntheticPipelineRaceConfig,
     format_pipeline_summary_ru,
@@ -18,6 +20,7 @@ from varwar.pipeline_benchmark import (
     summarize_synthetic_pipeline_race,
 )
 from varwar.method_catalog import method_catalog
+from varwar.pipelines import build_full_traffic_pipelines, build_stratified_pipelines
 
 
 def _summary_fixture() -> pd.DataFrame:
@@ -78,6 +81,39 @@ class PipelineBenchmarkTests(unittest.TestCase):
             definition.pipeline_id for definition in pipeline_definitions(config)
         }
         self.assertTrue(pipeline_ids.issubset(known_ids))
+
+    def test_every_implemented_estimator_has_a_pipeline_route(self) -> None:
+        spec = ExperimentSpec(
+            pre_treatment_cols=("x1",),
+            numerator_col="numerator",
+            denominator_col="denominator",
+            instrument_col="assigned",
+            received_treatment_col="received",
+            stratum_col="stratum",
+        )
+        definitions = [
+            candidate.definition
+            for candidate in build_full_traffic_pipelines(
+                spec,
+                prefer_pypi_hypex=False,
+            )
+        ]
+        definitions.extend(
+            candidate.definition
+            for candidate in build_stratified_pipelines(spec, {"example": 1.0})
+        )
+        covered = {
+            component
+            for definition in definitions
+            for component in definition.components
+        }
+        covered.update(definition.pipeline_id for definition in definitions)
+        implemented = {
+            record.method_id
+            for record in method_catalog()
+            if record.category.value == "Estimator" and record.is_implemented
+        }
+        self.assertTrue(implemented.issubset(covered))
 
     def test_summary_uses_h0_for_fpr_and_h1_for_efficiency(self) -> None:
         summary = summarize_synthetic_pipeline_race(_summary_fixture())
@@ -180,7 +216,10 @@ class PipelineBenchmarkTests(unittest.TestCase):
         profile = profile_synthetic_pipeline_memory(config)
         self.assertEqual(set(profile["memory_profile_trials"]), {1})
         self.assertTrue((profile["peak_python_memory_bytes"] > 0).all())
-        self.assertEqual(profile["pipeline"].nunique(), 17)
+        self.assertEqual(
+            profile["pipeline"].nunique(),
+            len(pipeline_definitions(config)),
+        )
 
     def test_pipeline_filter_runs_only_requested_rows(self) -> None:
         config = SyntheticPipelineRaceConfig(
