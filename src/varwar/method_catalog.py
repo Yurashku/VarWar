@@ -8,6 +8,7 @@ class MethodCategory(str, Enum):
     """Роль публичного метода в экспериментальном конвейере."""
 
     ESTIMATOR = "Estimator"
+    POPULATION_GENERALIZATION_ESTIMATOR = "PopulationGeneralizationEstimator"
     HYPOTHESIS_TEST = "HypothesisTest"
     TARGET_TRANSFORMER = "TargetTransformer"
     METRIC_TRANSFORMER = "MetricTransformer"
@@ -31,6 +32,17 @@ class MethodStatus(str, Enum):
 
 
 @dataclass(frozen=True)
+class MethodCapability:
+    """One scientifically valid way to use a method in a benchmark."""
+
+    design_mode: str
+    information_mode: str
+    estimand_id: str
+    temporal_mode: str = "pre_treatment_only"
+    notes: str = ""
+
+
+@dataclass(frozen=True)
 class MethodRecord:
     """Поисковые метаданные компонента, профиля или участника гонки."""
 
@@ -48,6 +60,10 @@ class MethodRecord:
             MethodStatus.IMPLEMENTED_INTEGRATION,
             MethodStatus.IMPLEMENTED_LEGACY,
         }
+
+    @property
+    def capabilities(self) -> tuple[MethodCapability, ...]:
+        return _CAPABILITY_MAP.get(self.method_id, ())
 
 
 _METHODS = (
@@ -78,10 +94,10 @@ _METHODS = (
     MethodRecord(
         "randomized_weighted_mean_diff",
         MethodCategory.ESTIMATOR,
-        MethodStatus.IMPLEMENTED,
-        "Difference of normalized hedgehog-weighted means with seeded within-arm shuffling and coherent Welch-style inference.",
+        MethodStatus.IMPLEMENTED_LEGACY,
+        "Unbiased hedgehog-weighted mean difference; retained as a normal-approximation research control, not an efficiency method.",
         "varwar.estimators.RandomizedWeightedMeanDiffEstimator",
-        "estimator_race",
+        "research_only_not_primary_race",
     ),
     MethodRecord(
         "permutation_mean_diff",
@@ -95,7 +111,7 @@ _METHODS = (
         "bootstrap_mean_diff",
         MethodCategory.ESTIMATOR,
         MethodStatus.IMPLEMENTED,
-        "Difference-in-means estimator with within-arm bootstrap standard error and percentile interval.",
+        "Difference-in-means estimator with coherent within-arm studentized bootstrap-t inference.",
         "varwar.estimators.BootstrapMeanDiffEstimator",
         "primary_pipeline_race",
     ),
@@ -103,7 +119,7 @@ _METHODS = (
         "regression_adjustment",
         MethodCategory.ESTIMATOR,
         MethodStatus.IMPLEMENTED,
-        "OLS treatment coefficient adjusted for pre-treatment covariates with HC1 inference.",
+        "Lin-style centered regression adjustment with treatment interactions and HC2 heteroskedasticity-robust inference.",
         "varwar.estimators.RegressionAdjustmentEstimator",
         "primary_pipeline_race",
     ),
@@ -124,6 +140,14 @@ _METHODS = (
         "stratification_pipeline_race",
     ),
     MethodRecord(
+        "population_weighted_stratified",
+        MethodCategory.POPULATION_GENERALIZATION_ESTIMATOR,
+        MethodStatus.IMPLEMENTED,
+        "Within-stratum A/B effects averaged with known target-population stratum shares.",
+        "varwar.estimators.PopulationWeightedStratifiedEstimator",
+        "population_information_race",
+    ),
+    MethodRecord(
         "variance_weighted_stratified",
         MethodCategory.ESTIMATOR,
         MethodStatus.IMPLEMENTED,
@@ -135,8 +159,16 @@ _METHODS = (
         "nearest_neighbor_matching",
         MethodCategory.ESTIMATOR,
         MethodStatus.IMPLEMENTED,
-        "One-nearest-neighbour ATT estimator with standardized numeric covariates and replacement.",
+        "Nearest-neighbour matching estimator with an explicit symmetric ATE mode for randomized experiments and ATT compatibility outside the active race.",
         "varwar.estimators.NearestNeighborMatchingEstimator",
+        "observational_specialized",
+    ),
+    MethodRecord(
+        "hypex_matching",
+        MethodCategory.ESTIMATOR,
+        MethodStatus.IMPLEMENTED_INTEGRATION,
+        "PyPI HypEx two-sided matching integration returning its bias-adjusted ATE.",
+        "varwar.estimators.HypExMatchingEstimator",
         "observational_specialized",
     ),
     MethodRecord(
@@ -286,11 +318,51 @@ _METHODS = (
         "varwar.placeholders.PlaceholderTargetTransformer",
     ),
     MethodRecord(
+        "isolation_forest_trimming",
+        MethodCategory.TARGET_TRANSFORMER,
+        MethodStatus.IMPLEMENTED,
+        "Treatment-blind Isolation-Forest trimming with explicit contamination and changed-metric contract.",
+        "varwar.transforms.IsolationForestTargetTransformer(method='trim')",
+        "robustness_backlog",
+    ),
+    MethodRecord(
+        "isolation_forest_winsorization",
+        MethodCategory.TARGET_TRANSFORMER,
+        MethodStatus.IMPLEMENTED,
+        "Treatment-blind Isolation-Forest winsorization with explicit contamination and changed-metric contract.",
+        "varwar.transforms.IsolationForestTargetTransformer(method='winsorize')",
+        "robustness_backlog",
+    ),
+    MethodRecord(
         "bayesian_cupac",
         MethodCategory.TARGET_TRANSFORMER,
         MethodStatus.PLACEHOLDER_NEEDS_SPEC,
-        "Bayesian prognostic adjustment awaiting a posterior target, model, and decision contract.",
+        "Historical alias; use panel_prior_cupac for the implemented panel-summary prior contract.",
         "varwar.placeholders.PlaceholderTargetTransformer",
+    ),
+    MethodRecord(
+        "panel_prior_cupac_A",
+        MethodCategory.TARGET_TRANSFORMER,
+        MethodStatus.IMPLEMENTED,
+        "Temporal CUPAC A with a discounted prior learned from historical-panel sufficient statistics.",
+        "varwar.transforms.PanelPriorCupacTransformer",
+        "panel_prior_pipeline_primitive",
+    ),
+    MethodRecord(
+        "panel_prior_cupac_A_plus_B",
+        MethodCategory.TARGET_TRANSFORMER,
+        MethodStatus.IMPLEMENTED,
+        "Panel-prior CUPAC A followed by a separate control-fitted in-time B stage.",
+        "varwar.transforms.PanelPriorZonedCupacTransformer",
+        "panel_prior_pipeline_primitive",
+    ),
+    MethodRecord(
+        "panel_prior_cupac_A_plus_B_plus_C",
+        MethodCategory.TARGET_TRANSFORMER,
+        MethodStatus.IMPLEMENTED,
+        "Panel-prior CUPAC A, control-fitted B and balance-gated C stages.",
+        "varwar.transforms.PanelPriorZonedCupacTransformer",
+        "panel_prior_pipeline_primitive",
     ),
     MethodRecord(
         "ratio_linearization",
@@ -348,19 +420,19 @@ _METHODS = (
     ),
     MethodRecord(
         "calibration_reweighting",
-        MethodCategory.ESTIMATOR,
-        MethodStatus.PLACEHOLDER_NEEDS_SPEC,
-        "Population calibration estimator requiring external population totals and a variance contract.",
-        "varwar.estimators.PlaceholderEstimator",
-        "population_generalization_backlog",
+        MethodCategory.POPULATION_GENERALIZATION_ESTIMATOR,
+        MethodStatus.IMPLEMENTED,
+        "Entropy-calibrated A/B means reproducing known target-population covariate moments within each arm.",
+        "varwar.estimators.CalibrationWeightedATEEstimator",
+        "population_information_race",
     ),
     MethodRecord(
         "optimal_transport_matching",
         MethodCategory.ESTIMATOR,
-        MethodStatus.PLACEHOLDER_NEEDS_SPEC,
-        "Optimal-transport matching candidate for observational data; matching and inference contracts are not fixed.",
-        "varwar.estimators.PlaceholderEstimator",
-        "observational_backlog",
+        MethodStatus.IMPLEMENTED,
+        "Optimal-transport matching estimator with explicit symmetric ATE mode for randomized experiments; observational use remains specialized.",
+        "varwar.estimators.OptimalTransportMatchingEstimator",
+        "observational_specialized",
     ),
     MethodRecord(
         "optimal_transport_homogeneity_test",
@@ -373,10 +445,10 @@ _METHODS = (
     MethodRecord(
         "hypex_matcher",
         MethodCategory.CONFIGURATION_PROFILE,
-        MethodStatus.PLACEHOLDER_NEEDS_SPEC,
-        "Possible HypEx matching integration profile; overlaps the local ATT matcher until parity rules are fixed.",
-        "varwar.estimators.PlaceholderEstimator",
-        "integration_backlog",
+        MethodStatus.EXCLUDED,
+        "Historical alias replaced by the executable hypex_matching estimator.",
+        "not_applicable",
+        "excluded_alias",
     ),
     MethodRecord(
         "optimal_transport_check",
@@ -504,6 +576,30 @@ _METHODS = (
         "exploratory_pipeline_race",
     ),
     MethodRecord(
+        "panel_prior_cupac_A__hypex_ab",
+        MethodCategory.COMPOSITE_PIPELINE,
+        MethodStatus.IMPLEMENTED_INTEGRATION,
+        "Panel-prior CUPAC A followed by HypEx Welch A/B inference.",
+        "varwar.pipelines.build_panel_prior_pipelines",
+        "panel_prior_race",
+    ),
+    MethodRecord(
+        "panel_prior_cupac_A_plus_B__hypex_ab",
+        MethodCategory.COMPOSITE_PIPELINE,
+        MethodStatus.IMPLEMENTED_INTEGRATION,
+        "Panel-prior CUPAC A, separate B stage and HypEx Welch A/B inference.",
+        "varwar.pipelines.build_panel_prior_pipelines",
+        "panel_prior_race",
+    ),
+    MethodRecord(
+        "panel_prior_cupac_A_plus_B_plus_C__hypex_ab",
+        MethodCategory.COMPOSITE_PIPELINE,
+        MethodStatus.IMPLEMENTED_INTEGRATION,
+        "Panel-prior CUPAC A, B, gated C and HypEx Welch A/B inference.",
+        "varwar.pipelines.build_panel_prior_pipelines",
+        "panel_prior_race",
+    ),
+    MethodRecord(
         "winsorized__hypex_ab",
         MethodCategory.COMPOSITE_PIPELINE,
         MethodStatus.IMPLEMENTED_INTEGRATION,
@@ -552,6 +648,56 @@ _METHODS = (
         "primary_pipeline_race",
     ),
 )
+
+_RCT_PRE_ESTIMATORS = {
+    "welch_mean_diff",
+    "hypex_ab",
+    "permutation_mean_diff",
+    "bootstrap_mean_diff",
+    "regression_adjustment",
+    "ml_rate",
+    "nearest_neighbor_matching",
+    "hypex_matching",
+    "optimal_transport_matching",
+    "stratified_mean_diff",
+    "cuped_control",
+    "cupac_linear_A",
+}
+_CAPABILITY_MAP: dict[str, tuple[MethodCapability, ...]] = {
+    method_id: (
+        MethodCapability("randomized", "experiment_only", "sample_ate", "pre_treatment_only"),
+        MethodCapability("randomized", "panel_prior", "sample_ate", "pre_treatment_only"),
+    )
+    for method_id in _RCT_PRE_ESTIMATORS
+}
+_CAPABILITY_MAP.update({
+    "cupac_linear_A_plus_B": (
+        MethodCapability("randomized", "experiment_only", "sample_ate", "post_treatment_allowed"),
+        MethodCapability("randomized", "panel_prior", "sample_ate", "post_treatment_allowed"),
+    ),
+    "cupac_linear_A_plus_B_plus_C": (
+        MethodCapability("randomized", "experiment_only", "sample_ate", "post_treatment_allowed"),
+        MethodCapability("randomized", "panel_prior", "sample_ate", "post_treatment_allowed"),
+    ),
+    "panel_prior_cupac_A": (
+        MethodCapability("randomized", "panel_prior", "sample_ate", "pre_treatment_only"),
+    ),
+    "panel_prior_cupac_A_plus_B": (
+        MethodCapability("randomized", "panel_prior", "sample_ate", "post_treatment_allowed"),
+    ),
+    "panel_prior_cupac_A_plus_B_plus_C": (
+        MethodCapability("randomized", "panel_prior", "sample_ate", "post_treatment_allowed"),
+    ),
+    "panel_prior_cupac_A__hypex_ab": (
+        MethodCapability("randomized", "panel_prior", "sample_ate", "pre_treatment_only"),
+    ),
+    "panel_prior_cupac_A_plus_B__hypex_ab": (
+        MethodCapability("randomized", "panel_prior", "sample_ate", "post_treatment_allowed"),
+    ),
+    "panel_prior_cupac_A_plus_B_plus_C__hypex_ab": (
+        MethodCapability("randomized", "panel_prior", "sample_ate", "post_treatment_allowed"),
+    ),
+})
 
 _INDEX = {record.method_id: record for record in _METHODS}
 if len(_INDEX) != len(_METHODS):

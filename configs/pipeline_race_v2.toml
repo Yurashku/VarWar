@@ -12,7 +12,11 @@ scenario_ids = [
   "nonlinear_gaussian",
   "contaminated_c",
   "misclassified_b",
+  "population_shifted_strata",
 ]
+information_mode = "both"
+panel_prior_months = 6
+include_non_rct_specialized = false
 
 [stratification]
 enabled = true

@@ -1,0 +1,50 @@
+{
+  "config": {
+    "n_trials": 5,
+    "n": 2500,
+    "alternative_effect": 0.15,
+    "covariate_signal": 0.75,
+    "noise_scale": 1.0,
+    "seed": 20260724,
+    "scenario_ids": [
+      "linear_gaussian",
+      "linear_heavy_tail",
+      "nonlinear_gaussian",
+      "contaminated_c",
+      "misclassified_b",
+      "population_shifted_strata"
+    ],
+    "category_cols": [
+      "region",
+      "device",
+      "activity_band"
+    ],
+    "n_strata": 6,
+    "population_size": 16,
+    "max_generations": 25,
+    "elite_size": 3,
+    "patience": 7,
+    "min_macro_stratum_size": 8,
+    "mutation_probability": 0.2,
+    "prefer_pypi_hypex": true,
+    "alpha": 0.05,
+    "include_stratified": true,
+    "heavy_tail": null,
+    "pipeline_ids": null,
+    "information_mode": "both",
+    "panel_prior_months": 6,
+    "include_non_rct_specialized": false
+  },
+  "rows": 2970,
+  "successful_rows": 2970,
+  "raw_results_saved": true,
+  "refreshed_pipelines": [],
+  "package_versions": {
+    "hypex": "1.0.6",
+    "numpy": "1.26.4",
+    "pandas": "2.2.3",
+    "scipy": "1.13.1",
+    "matplotlib": "3.9.0"
+  },
+  "memory_metric": "tracemalloc peak Python allocations; native NumPy/BLAS buffers excluded"
+}

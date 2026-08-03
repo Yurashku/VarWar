@@ -88,7 +88,7 @@ class TargetTransformer(Protocol):
         self,
         data: pd.DataFrame,
         spec: ExperimentSpec,
-        auxiliary_data: pd.DataFrame | None = None,
+        auxiliary_data: Any | None = None,
     ) -> pd.Series:
         ...
 
@@ -142,7 +142,7 @@ class WrappedEstimator:
         self,
         data: pd.DataFrame,
         spec: ExperimentSpec,
-        auxiliary_data: pd.DataFrame | None = None,
+        auxiliary_data: Any | None = None,
     ) -> EstimateResult:
         adjusted_col = f"__varwar_{self.name}_target"
         adjusted = self.transformer.fit_transform(data, spec, auxiliary_data)

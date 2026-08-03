@@ -15,6 +15,19 @@ def normal_two_sided_p(statistic: float) -> float:
     return math.erfc(abs(statistic) / math.sqrt(2.0))
 
 
+def normal_critical(alpha: float) -> float:
+    if not 0.0 < alpha < 1.0:
+        return math.nan
+    try:
+        from scipy import stats as scipy_stats  # type: ignore
+
+        return float(scipy_stats.norm.ppf(1.0 - alpha / 2.0))
+    except Exception:
+        from statistics import NormalDist
+
+        return float(NormalDist().inv_cdf(1.0 - alpha / 2.0))
+
+
 def t_two_sided_p(statistic: float, df: float) -> float:
     if not math.isfinite(statistic) or not math.isfinite(df) or df <= 0:
         return math.nan

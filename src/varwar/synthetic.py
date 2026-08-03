@@ -15,10 +15,58 @@ class SyntheticConfig:
     noise_scale: float = 1.0
     seed: int = 42
     heavy_tail: bool = False
+    noise_distribution: str | None = None
+    student_t_df: float = 3.0
+    contamination_probability: float = 0.02
+    contamination_scale: float = 12.0
     outcome_model: str = "linear"
     effect_heterogeneity: float = 0.0
     expert_safe_treatment_shift: float = 0.0
     gated_treatment_shift: float = 0.0
+    experiment_stratum_weights: tuple[float, float, float] | None = None
+
+
+def generate_synthetic_panel(
+    config: SyntheticConfig = SyntheticConfig(),
+    *,
+    n_months: int = 6,
+    start_date: str = "2023-01-01",
+) -> pd.DataFrame:
+    """Generate treatment-free monthly panel rows for panel-prior R&D.
+
+    Every month is generated independently with the same schema as the
+    experiment.  The function is intentionally a local synthetic helper; a
+    production caller should provide ``PanelPriorSummary`` from SQL instead
+    of passing panel rows into an estimator.
+    """
+
+    if n_months < 2:
+        raise ValueError("n_months must be at least two for temporal validation.")
+    frames: list[pd.DataFrame] = []
+    dates = pd.date_range(start=start_date, periods=n_months, freq="MS")
+    for month_index, date in enumerate(dates):
+        month_config = SyntheticConfig(
+            n=config.n,
+            effect=0.0,
+            covariate_signal=config.covariate_signal,
+            noise_scale=config.noise_scale,
+            seed=config.seed + 50_000 + month_index,
+            heavy_tail=config.heavy_tail,
+            noise_distribution=config.noise_distribution,
+            student_t_df=config.student_t_df,
+            contamination_probability=config.contamination_probability,
+            contamination_scale=config.contamination_scale,
+            outcome_model=config.outcome_model,
+            effect_heterogeneity=config.effect_heterogeneity,
+            experiment_stratum_weights=config.experiment_stratum_weights,
+        )
+        month = generate_synthetic_ab(month_config)
+        month["treatment"] = 0
+        month["report_date"] = date
+        month["entity_id"] = month["unit_id"]
+        month["panel_month"] = month_index
+        frames.append(month)
+    return pd.concat(frames, ignore_index=True)
 
 
 def generate_synthetic_ab(config: SyntheticConfig = SyntheticConfig()) -> pd.DataFrame:
@@ -64,10 +112,26 @@ def generate_synthetic_ab(config: SyntheticConfig = SyntheticConfig()) -> pd.Dat
     operational_latent = (
         0.35 * y_pre + 0.4 * calendar_latent + rng.normal(0.0, 0.7, size=n)
     )
-    if config.heavy_tail:
-        noise = rng.standard_t(df=3, size=n) * config.noise_scale
-    else:
-        noise = rng.normal(0.0, config.noise_scale, size=n)
+    noise = _generate_noise(rng, config, n)
+
+    population_stratum = None
+    population_score = np.zeros(n, dtype=float)
+    if config.experiment_stratum_weights is not None:
+        probabilities = np.asarray(config.experiment_stratum_weights, dtype=float)
+        if probabilities.shape != (3,) or np.any(probabilities < 0.0):
+            raise ValueError("experiment_stratum_weights must contain three non-negative values.")
+        if not math.isclose(float(probabilities.sum()), 1.0, rel_tol=1e-9, abs_tol=1e-12):
+            raise ValueError("experiment_stratum_weights must sum to one.")
+        population_stratum = rng.choice(
+            np.array(["low", "mid", "high"], dtype=object),
+            size=n,
+            p=probabilities,
+        )
+        population_score = np.select(
+            [population_stratum == "low", population_stratum == "high"],
+            [-1.0, 1.0],
+            default=0.0,
+        )
 
     baseline = (
         2.0
@@ -77,6 +141,7 @@ def generate_synthetic_ab(config: SyntheticConfig = SyntheticConfig()) -> pd.Dat
         + 0.20 * calendar_latent
         + 0.18 * market_latent
         + 0.25 * operational_latent
+        + 0.60 * population_score
     )
     if config.outcome_model == "nonlinear":
         baseline += (
@@ -115,7 +180,7 @@ def generate_synthetic_ab(config: SyntheticConfig = SyntheticConfig()) -> pd.Dat
         np.where(y_pre > 0.7, "high", "medium"),
     )
 
-    return pd.DataFrame(
+    result = pd.DataFrame(
         {
             "unit_id": np.arange(n),
             "treatment": treatment,
@@ -146,6 +211,50 @@ def generate_synthetic_ab(config: SyntheticConfig = SyntheticConfig()) -> pd.Dat
             "activity_band": pd.Categorical(activity_band),
         }
     )
+    if population_stratum is not None:
+        result["population_stratum"] = pd.Categorical(
+            population_stratum,
+            categories=["low", "mid", "high"],
+        )
+        result["population_score"] = population_score
+    return result
+
+
+def _generate_noise(
+    rng: np.random.Generator,
+    config: SyntheticConfig,
+    n: int,
+) -> np.ndarray:
+    distribution = config.noise_distribution
+    if distribution is None:
+        distribution = "student_t" if config.heavy_tail else "normal"
+    if distribution == "normal":
+        base = rng.normal(0.0, 1.0, size=n)
+    elif distribution == "student_t":
+        if config.student_t_df <= 2.0:
+            raise ValueError("student_t_df must exceed two for finite variance.")
+        base = rng.standard_t(df=config.student_t_df, size=n)
+        base /= math.sqrt(config.student_t_df / (config.student_t_df - 2.0))
+    elif distribution == "centered_lognormal":
+        sigma = 1.0
+        raw = rng.lognormal(mean=0.0, sigma=sigma, size=n)
+        mean = math.exp(0.5 * sigma**2)
+        variance = (math.exp(sigma**2) - 1.0) * math.exp(sigma**2)
+        base = (raw - mean) / math.sqrt(variance)
+    elif distribution == "contaminated_normal":
+        if not 0.0 <= config.contamination_probability < 1.0:
+            raise ValueError("contamination_probability must be in [0, 1).")
+        if config.contamination_scale <= 0.0:
+            raise ValueError("contamination_scale must be positive.")
+        contaminated = rng.random(n) < config.contamination_probability
+        scales = np.where(contaminated, config.contamination_scale, 1.0)
+        base = rng.normal(0.0, scales, size=n)
+    else:
+        raise ValueError(
+            "noise_distribution must be normal, student_t, centered_lognormal, "
+            "or contaminated_normal."
+        )
+    return np.asarray(base, dtype=float) * config.noise_scale
 
 
 def generate_historical_controls(config: SyntheticConfig = SyntheticConfig()) -> pd.DataFrame:
@@ -157,10 +266,15 @@ def generate_historical_controls(config: SyntheticConfig = SyntheticConfig()) ->
             noise_scale=config.noise_scale,
             seed=config.seed + 10_000,
             heavy_tail=config.heavy_tail,
+            noise_distribution=config.noise_distribution,
+            student_t_df=config.student_t_df,
+            contamination_probability=config.contamination_probability,
+            contamination_scale=config.contamination_scale,
             outcome_model=config.outcome_model,
             effect_heterogeneity=config.effect_heterogeneity,
             expert_safe_treatment_shift=0.0,
             gated_treatment_shift=0.0,
+            experiment_stratum_weights=config.experiment_stratum_weights,
         )
     )
     historical["treatment"] = 0

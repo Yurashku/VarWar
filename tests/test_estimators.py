@@ -18,6 +18,7 @@ from varwar.core import ExperimentSpec, WrappedEstimator
 from varwar.estimators import (
     ApproxKSTestEstimator,
     BootstrapMeanDiffEstimator,
+    CalibrationWeightedATEEstimator,
     DifferenceInMeansEstimator,
     EnergyDistanceTestEstimator,
     HypExABTestEstimator,
@@ -26,15 +27,24 @@ from varwar.estimators import (
     KSTestEstimator,
     MLRateEstimator,
     NearestNeighborMatchingEstimator,
+    OptimalTransportMatchingEstimator,
     PlaceholderEstimator,
     PermutationMeanDiffEstimator,
     RandomizedTTestEstimator,
     RandomizedWeightedMeanDiffEstimator,
     RatioDeltaMethodEstimator,
+    PopulationWeightedStratifiedEstimator,
+    StratifiedDifferenceInMeansEstimator,
+    TrimmedMeanEstimator,
 )
 from varwar.synthetic import SyntheticConfig, generate_historical_controls, generate_synthetic_ab
 from varwar.feature_sets import default_cupac_feature_sets
-from varwar.transforms import CupedTransformer, ZonedCupacTransformer
+from varwar.transforms import (
+    CupedTransformer,
+    IsolationForestTargetTransformer,
+    LinearCupacTransformer,
+    ZonedCupacTransformer,
+)
 
 
 class EstimatorTests(unittest.TestCase):
@@ -79,6 +89,89 @@ class EstimatorTests(unittest.TestCase):
         self.assertEqual(first.to_record(), second.to_record())
         self.assertLessEqual(first.ci_low, first.effect)
         self.assertGreaterEqual(first.ci_high, first.effect)
+        self.assertEqual(first.diagnostics["ci_method"], "studentized_bootstrap_t")
+        self.assertEqual(first.diagnostics["p_value_method"], "studentized_bootstrap_t")
+
+    def test_yuen_trimmed_estimator_matches_scipy(self) -> None:
+        from scipy import stats as scipy_stats
+
+        control = np.array([0.0, 1.0, 2.0, 3.0, 100.0])
+        treatment = np.array([1.0, 2.0, 3.0, 4.0, 200.0])
+        data = pd.DataFrame(
+            {
+                "treatment": np.r_[np.zeros(control.size), np.ones(treatment.size)],
+                "y": np.r_[control, treatment],
+            }
+        )
+        result = TrimmedMeanEstimator(trim_fraction=0.2).estimate(
+            data,
+            ExperimentSpec(),
+        )
+        reference = scipy_stats.ttest_ind(
+            treatment,
+            control,
+            equal_var=False,
+            trim=0.2,
+        )
+        self.assertAlmostEqual(result.effect, 1.0)
+        self.assertAlmostEqual(result.statistic, float(reference.statistic), places=12)
+        self.assertAlmostEqual(result.p_value, float(reference.pvalue), places=12)
+
+    def test_population_stratification_uses_external_population_weights(self) -> None:
+        rows = []
+        for stratum, effect in (("low", 0.0), ("high", 4.0)):
+            for treatment in (0, 1):
+                for baseline in (0.0, 1.0, 2.0):
+                    rows.append(
+                        {
+                            "stratum": stratum,
+                            "treatment": treatment,
+                            "y": baseline + treatment * effect,
+                        }
+                    )
+        data = pd.DataFrame(rows)
+        spec = ExperimentSpec(stratum_col="stratum")
+        sample = StratifiedDifferenceInMeansEstimator().estimate(data, spec)
+        population = PopulationWeightedStratifiedEstimator(
+            population_weights={"low": 0.75, "high": 0.25}
+        ).estimate(data, spec)
+        self.assertAlmostEqual(sample.effect, 2.0)
+        self.assertAlmostEqual(population.effect, 1.0)
+        self.assertEqual(
+            population.diagnostics["weight_source"],
+            "known_target_population",
+        )
+
+    def test_entropy_calibration_targets_known_population_moment(self) -> None:
+        data = pd.DataFrame(
+            {
+                "treatment": [0, 0, 0, 0, 1, 1, 1, 1],
+                "population_score": [-1.0, -1.0, 0.0, 1.0] * 2,
+                "y": [-2.0, -2.0, 0.0, 2.0, -1.0, -1.0, 1.0, 3.0],
+            }
+        )
+        result = CalibrationWeightedATEEstimator(
+            population_moments={"population_score": -0.5}
+        ).estimate(data, ExperimentSpec())
+        self.assertAlmostEqual(result.effect, 1.0, places=10)
+        self.assertLess(result.diagnostics["max_balance_error"], 1e-7)
+
+    def test_optimal_transport_matching_is_exact_and_capacity_bounded(self) -> None:
+        data = pd.DataFrame(
+            {
+                "treatment": [0, 0, 1, 1, 1],
+                "y": [0.0, 10.0, 1.0, 2.0, 9.0],
+                "x": [0.0, 10.0, 1.0, 2.0, 9.0],
+            }
+        )
+        result = OptimalTransportMatchingEstimator().estimate(
+            data,
+            ExperimentSpec(pre_treatment_cols=("x",)),
+        )
+        self.assertEqual(result.diagnostics["control_reuse_capacity"], 2)
+        self.assertEqual(result.diagnostics["matched_pairs"], 3)
+        self.assertLessEqual(result.diagnostics["unique_controls"], 2)
+        self.assertTrue(math.isfinite(result.effect))
 
     def test_cuped_wrapper_reduces_standard_error_on_correlated_synthetic_data(self) -> None:
         config = SyntheticConfig(n=6000, effect=0.2, covariate_signal=1.2, seed=7)
@@ -206,6 +299,45 @@ class EstimatorTests(unittest.TestCase):
             abc_transformer.diagnostics()["stage_3"],
             "linear_adjustment_C",
         )
+
+    def test_temporal_cupac_tunes_ridge_on_historical_target_only(self) -> None:
+        data = generate_synthetic_ab(SyntheticConfig(n=500, effect=0.2, seed=41))
+        spec = ExperimentSpec(
+            pre_target_col="y_pre",
+            pre_treatment_cols=("y_pre", "x1", "x2"),
+        )
+        transformer = LinearCupacTransformer()
+        adjusted = transformer.fit_transform(data, spec)
+        self.assertEqual(len(adjusted), len(data))
+        diagnostics = transformer.diagnostics()
+        self.assertTrue(diagnostics["ridge_auto_tuned"])
+        self.assertGreater(diagnostics["ridge_validation_candidates"], 0)
+        self.assertFalse(diagnostics["current_outcome_used_for_model_fit"])
+
+    def test_isolation_forest_transformer_is_deterministic_and_treatment_blind(self) -> None:
+        data = pd.DataFrame(
+            {
+                "treatment": [0] * 30 + [1] * 30,
+                "y": [float(value) for value in range(30)]
+                + [float(value) for value in range(30)],
+            }
+        )
+        data.loc[0, "y"] = 1000.0
+        spec = ExperimentSpec()
+        first = IsolationForestTargetTransformer(
+            method="winsorize", contamination=0.05, random_state=9
+        )
+        second = IsolationForestTargetTransformer(
+            method="winsorize", contamination=0.05, random_state=9
+        )
+        first_values = first.fit_transform(data, spec)
+        second_values = second.fit_transform(data, spec)
+        np.testing.assert_allclose(first_values, second_values, equal_nan=True)
+        self.assertEqual(
+            first.diagnostics()["threshold_selection"],
+            "pooled_score_quantile_without_group_labels",
+        )
+        self.assertGreaterEqual(first.diagnostics()["outlier_count"], 1)
 
     def test_zone_c_gate_rejects_treatment_dependent_feature(self) -> None:
         data = generate_synthetic_ab(
@@ -371,6 +503,25 @@ class EstimatorTests(unittest.TestCase):
         self.assertEqual(adjusted.diagnostics["variance_reduction"], "cupac")
         self.assertNotAlmostEqual(adjusted.effect, raw.effect, places=10)
         self.assertLess(adjusted.standard_error, raw.standard_error)
+
+    def test_synthetic_noise_families_are_finite_and_reproducible(self) -> None:
+        for distribution in (
+            "normal",
+            "student_t",
+            "centered_lognormal",
+            "contaminated_normal",
+        ):
+            config = SyntheticConfig(
+                n=500,
+                seed=701,
+                noise_distribution=distribution,
+                experiment_stratum_weights=(0.2, 0.4, 0.4),
+            )
+            first = generate_synthetic_ab(config)
+            second = generate_synthetic_ab(config)
+            self.assertTrue(np.isfinite(first["y"]).all())
+            self.assertTrue(first.equals(second))
+            self.assertIn("population_stratum", first)
 
     def test_pypi_hypex_ab_ignores_irrelevant_categorical_columns(self) -> None:
         try:

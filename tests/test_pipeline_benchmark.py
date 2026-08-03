@@ -20,7 +20,11 @@ from varwar.pipeline_benchmark import (
     summarize_synthetic_pipeline_race,
 )
 from varwar.method_catalog import method_catalog
-from varwar.pipelines import build_full_traffic_pipelines, build_stratified_pipelines
+from varwar.pipelines import (
+    build_cartesian_rct_pipelines,
+    build_full_traffic_pipelines,
+    build_stratified_pipelines,
+)
 
 
 def _summary_fixture() -> pd.DataFrame:
@@ -239,6 +243,98 @@ class PipelineBenchmarkTests(unittest.TestCase):
         self.assertEqual(
             set(raw["pipeline"]),
             {"welch", "ga_strata__stratified"},
+        )
+
+    def test_population_information_race_has_sample_and_population_estimands(self) -> None:
+        config = SyntheticPipelineRaceConfig(
+            n_trials=1,
+            n=800,
+            scenario_ids=("population_shifted_strata",),
+            include_stratified=False,
+            prefer_pypi_hypex=False,
+            pipeline_ids=(
+                "stratified_mean_diff",
+                "population_weighted_stratified",
+                "calibration_reweighting",
+            ),
+        )
+        raw = run_synthetic_pipeline_race(config)
+        self.assertEqual(
+            set(raw["pipeline"]),
+            {
+                "stratified_mean_diff",
+                "population_weighted_stratified",
+                "calibration_reweighting",
+            },
+        )
+        self.assertTrue((raw["status"] == "ok").all())
+        self.assertEqual(set(raw["true_effect"]), {0.0, config.alternative_effect})
+
+    def test_race_keeps_information_and_temporal_modes_separate(self) -> None:
+        config = SyntheticPipelineRaceConfig(
+            n_trials=1,
+            n=300,
+            scenario_ids=("linear_gaussian",),
+            include_stratified=False,
+            prefer_pypi_hypex=False,
+            pipeline_ids=(
+                "welch",
+                "cupac_linear_A__hypex_ab",
+                "cupac_linear_A_plus_B__hypex_ab",
+                "panel_prior_cupac_A__hypex_ab",
+            ),
+        )
+        raw = run_synthetic_pipeline_race(config)
+        self.assertEqual(set(raw["race_information_mode"]), {"experiment_only", "panel_prior"})
+        modes = raw[["pipeline", "race_information_mode", "information_mode", "temporal_mode"]].drop_duplicates()
+        self.assertEqual(
+            set(modes.loc[modes["pipeline"] == "welch", "temporal_mode"]),
+            {"pre_treatment_only"},
+        )
+        self.assertEqual(
+            set(modes.loc[modes["pipeline"] == "cupac_linear_A_plus_B__hypex_ab", "temporal_mode"]),
+            {"post_treatment_allowed"},
+        )
+        self.assertEqual(
+            set(modes.loc[modes["pipeline"] == "panel_prior_cupac_A__hypex_ab", "race_information_mode"]),
+            {"panel_prior"},
+        )
+
+    def test_cartesian_rct_product_has_explicit_component_contracts(self) -> None:
+        spec = ExperimentSpec(
+            unit_col="unit_id",
+            pre_target_col="y_pre",
+            covariate_cols=("y_pre", "x1", "x2"),
+            pre_treatment_cols=("y_pre", "x1", "x2"),
+            expert_safe_in_time_cols=("calendar_index",),
+        )
+        local = build_cartesian_rct_pipelines(
+            spec, prefer_pypi_hypex=False, include_panel_prior=False
+        )
+        self.assertEqual(len(local), 48)
+        self.assertEqual(len({candidate.definition.pipeline_id for candidate in local}), 48)
+        self.assertTrue(
+            any(candidate.definition.pipeline_id == "cartesian__welch__cuped_control" for candidate in local)
+        )
+        self.assertTrue(
+            all(candidate.definition.information_mode == "experiment_only" for candidate in local)
+        )
+        panel = build_cartesian_rct_pipelines(
+            spec, prefer_pypi_hypex=False, include_panel_prior=True
+        )
+        self.assertEqual(len(panel), 72)
+        self.assertTrue(
+            all(
+                candidate.definition.information_mode == "panel_prior"
+                for candidate in panel
+                if "panel_prior" in candidate.definition.pipeline_id
+            )
+        )
+        self.assertTrue(
+            any(
+                candidate.definition.temporal_mode == "post_treatment_allowed"
+                for candidate in panel
+            )
         )
 
 
