@@ -833,10 +833,15 @@ def _hypothesis_metrics(
         "n_success": int(effect.size),
         "success_rate": float(effect.size / len(frame)) if len(frame) else math.nan,
         "mean_effect": mean_effect,
+        "sum_effect": float(effect.sum()) if effect.size else math.nan,
+        "sum_effect_sq": (
+            float(np.square(effect).sum()) if effect.size else math.nan
+        ),
         "bias": bias,
         "bias_p_value": _mean_zero_pvalue(bias, empirical_sd, int(effect.size)),
         "empirical_sd": empirical_sd,
         "mean_se": float(se.mean()) if se.size else math.nan,
+        "sum_se": float(se.sum()) if se.size else math.nan,
         "rejection_rate": float(np.mean(p_value < alpha)) if p_value.size else math.nan,
         "rejection_count": int(np.sum(p_value < alpha)),
         "coverage": (
@@ -846,6 +851,11 @@ def _hypothesis_metrics(
         ),
         "coverage_count": int(covered.sum()),
         "coverage_trials": int(coverage_mask.sum()),
+        "runtime_total_ms": (
+            float(runtime[np.isfinite(runtime)].sum())
+            if np.isfinite(runtime).any()
+            else math.nan
+        ),
         "median_runtime_ms": (
             float(np.nanmedian(runtime)) if np.isfinite(runtime).any() else math.nan
         ),
@@ -967,6 +977,15 @@ def summarize_synthetic_pipeline_race(
             "analysis_rows": h1["median_analysis_rows"],
             "true_effect": true_effect,
             "mean_effect_h1": h1["mean_effect"],
+            # Sufficient aggregates make the Excel dashboard independent of
+            # trial-level rows while preserving exact pooled means/SDs.
+            "sum_effect_h1": h1["sum_effect"],
+            "sum_effect_sq_h1": h1["sum_effect_sq"],
+            "sum_se_h1": h1["sum_se"],
+            "coverage_count_h1": h1["coverage_count"],
+            "false_positive_count_h0": h0["rejection_count"],
+            "power_count_h1": h1["rejection_count"],
+            "runtime_total_ms_h1": h1["runtime_total_ms"],
             "bias_h0": h0["bias"],
             "bias_h1": h1["bias"],
             "bias_h1_p_value": h1["bias_p_value"],
@@ -1152,6 +1171,110 @@ def summarize_synthetic_pipeline_race(
         ascending=[True, False, True],
         kind="stable",
     ).reset_index(drop=True)
+
+
+def select_best_pipelines(summary: pd.DataFrame) -> pd.DataFrame:
+    """Выбрать победителя только внутри сопоставимого информационного контура.
+
+    Отбор не смешивает сценарии, доступ к исторической панели, доступ к
+    post-treatment данным и estimand. Сначала применяются ``ranking_eligible``
+    (диагностический экран плюс минимальное число повторений), затем
+    минимизируется эмпирическое SD оценки эффекта. Среднее время анализа и ID
+    пайплайна используются только как стабильные tie-breaker-ы.
+
+    Возвращается по одной строке на область сравнения. Если данных недостаточно
+    или ни один кандидат не прошёл экран, ``selected_pipeline`` остаётся пустым,
+    а причина фиксируется в ``selection_status``. Это не подменяет научный
+    вывод красивым победителем при малом числе повторений.
+    """
+
+    if summary.empty:
+        return pd.DataFrame(
+            columns=[
+                "data_scenario",
+                "race_information_mode",
+                "temporal_mode",
+                "estimand_id",
+                "candidate_count",
+                "eligible_count",
+                "selected_pipeline",
+                "selected_pipeline_name_ru",
+                "selected_empirical_sd_h1",
+                "selected_variance_reduction_vs_welch",
+                "selected_median_runtime_ms",
+                "selection_status",
+                "selection_criterion",
+            ]
+        )
+
+    frame = summary.copy()
+    for column, default in (
+        ("race_information_mode", "experiment_only"),
+        ("temporal_mode", "pre_treatment_only"),
+        ("estimand_id", "unknown"),
+    ):
+        if column not in frame.columns:
+            frame[column] = default
+        frame[column] = frame[column].fillna(default).astype(str)
+    if "ranking_eligible" not in frame.columns:
+        frame["ranking_eligible"] = False
+    if "pipeline_tier" not in frame.columns:
+        frame["pipeline_tier"] = "unknown"
+
+    scope_columns = [
+        "data_scenario",
+        "race_information_mode",
+        "temporal_mode",
+        "estimand_id",
+    ]
+    rows: list[dict[str, Any]] = []
+    for scope, block in frame.groupby(scope_columns, sort=False, dropna=False):
+        if not isinstance(scope, tuple):
+            scope = (scope,)
+        scope_values = dict(zip(scope_columns, scope))
+        comparable = block.loc[
+            block["pipeline_tier"].isin(("confirmatory", "exploratory"))
+        ]
+        eligible = comparable.loc[comparable["ranking_eligible"].astype(bool)]
+        record: dict[str, Any] = {
+            **scope_values,
+            "candidate_count": int(len(comparable)),
+            "eligible_count": int(len(eligible)),
+            "selected_pipeline": None,
+            "selected_pipeline_name_ru": None,
+            "selected_empirical_sd_h1": math.nan,
+            "selected_variance_reduction_vs_welch": math.nan,
+            "selected_median_runtime_ms": math.nan,
+            "selection_status": "нет кандидата",
+            "selection_criterion": (
+                "diagnostic screen + scientific sample size; "
+                "min empirical SD, then runtime, then pipeline ID"
+            ),
+        }
+        if len(eligible):
+            winner = eligible.sort_values(
+                ["empirical_sd_h1", "median_runtime_ms", "pipeline"],
+                ascending=[True, True, True],
+                kind="stable",
+            ).iloc[0]
+            record.update(
+                {
+                    "selected_pipeline": winner["pipeline"],
+                    "selected_pipeline_name_ru": winner["pipeline_name_ru"],
+                    "selected_empirical_sd_h1": winner["empirical_sd_h1"],
+                    "selected_variance_reduction_vs_welch": winner[
+                        "variance_reduction_vs_welch"
+                    ],
+                    "selected_median_runtime_ms": winner["median_runtime_ms"],
+                    "selection_status": "выбран по минимальному SD",
+                }
+            )
+        elif not bool(block.get("scientific_sample_size_ok", pd.Series(True)).all()):
+            record["selection_status"] = "недостаточно повторений для рейтинга"
+        elif not bool(block.get("passes_diagnostic_screen", pd.Series(False)).any()):
+            record["selection_status"] = "нет кандидата после диагностического экрана"
+        rows.append(record)
+    return pd.DataFrame(rows)
 
 
 def _fill_relative_efficiency(

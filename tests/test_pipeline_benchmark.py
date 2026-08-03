@@ -17,6 +17,7 @@ from varwar.pipeline_benchmark import (
     pipeline_definitions,
     profile_synthetic_pipeline_memory,
     run_synthetic_pipeline_race,
+    select_best_pipelines,
     summarize_synthetic_pipeline_race,
 )
 from varwar.method_catalog import method_catalog
@@ -335,6 +336,65 @@ class PipelineBenchmarkTests(unittest.TestCase):
                 candidate.definition.temporal_mode == "post_treatment_allowed"
                 for candidate in panel
             )
+        )
+
+    def test_best_pipeline_selection_never_crosses_information_or_time_contracts(self) -> None:
+        rows = []
+        for pipeline, info, temporal, sd, eligible in (
+            ("a", "experiment_only", "pre_treatment_only", 0.10, True),
+            ("b", "experiment_only", "pre_treatment_only", 0.08, True),
+            ("c", "panel_prior", "pre_treatment_only", 0.01, True),
+            ("d", "experiment_only", "post_treatment_allowed", 0.01, True),
+        ):
+            rows.append(
+                {
+                    "data_scenario": "linear_gaussian",
+                    "race_information_mode": info,
+                    "temporal_mode": temporal,
+                    "estimand_id": "sample_ate",
+                    "pipeline": pipeline,
+                    "pipeline_name_ru": pipeline,
+                    "pipeline_tier": "confirmatory",
+                    "ranking_eligible": eligible,
+                    "scientific_sample_size_ok": True,
+                    "passes_diagnostic_screen": True,
+                    "empirical_sd_h1": sd,
+                    "variance_reduction_vs_welch": 0.1,
+                    "median_runtime_ms": 1.0,
+                }
+            )
+        selected = select_best_pipelines(pd.DataFrame(rows))
+        winners = selected.set_index(
+            ["race_information_mode", "temporal_mode"]
+        )["selected_pipeline"]
+        self.assertEqual(winners.loc["experiment_only", "pre_treatment_only"], "b")
+        self.assertEqual(winners.loc["panel_prior", "pre_treatment_only"], "c")
+        self.assertEqual(winners.loc["experiment_only", "post_treatment_allowed"], "d")
+
+    def test_best_pipeline_selection_reports_insufficient_trials(self) -> None:
+        row = pd.DataFrame(
+            [
+                {
+                    "data_scenario": "linear_gaussian",
+                    "race_information_mode": "experiment_only",
+                    "temporal_mode": "pre_treatment_only",
+                    "estimand_id": "sample_ate",
+                    "pipeline": "welch",
+                    "pipeline_name_ru": "Welch",
+                    "pipeline_tier": "confirmatory",
+                    "ranking_eligible": False,
+                    "scientific_sample_size_ok": False,
+                    "passes_diagnostic_screen": True,
+                    "empirical_sd_h1": 0.1,
+                    "variance_reduction_vs_welch": 0.0,
+                    "median_runtime_ms": 1.0,
+                }
+            ]
+        )
+        selected = select_best_pipelines(row)
+        self.assertEqual(
+            selected.loc[0, "selection_status"],
+            "недостаточно повторений для рейтинга",
         )
 
 
