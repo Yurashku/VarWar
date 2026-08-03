@@ -33,7 +33,8 @@
     "pipeline_ids": null,
     "information_mode": "both",
     "panel_prior_months": 6,
-    "include_non_rct_specialized": false
+    "include_non_rct_specialized": false,
+    "include_cartesian": false
   },
   "rows": 2970,
   "successful_rows": 2970,
@@ -46,5 +47,7 @@
     "scipy": "1.13.1",
     "matplotlib": "3.9.0"
   },
-  "memory_metric": "tracemalloc peak Python allocations; native NumPy/BLAS buffers excluded"
+  "memory_metric": "tracemalloc peak Python allocations; native NumPy/BLAS buffers excluded",
+  "selection_file": "selection.csv",
+  "selection_criterion": "diagnostic screen + scientific sample size; min empirical SD, then runtime, then pipeline ID"
 }

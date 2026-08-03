@@ -22,6 +22,7 @@ from varwar.pipeline_benchmark import (
     pipeline_definitions,
     profile_synthetic_pipeline_memory,
     run_synthetic_pipeline_race,
+    select_best_pipelines,
     summarize_synthetic_pipeline_race,
 )
 
@@ -240,19 +241,30 @@ def _plot_scenarios(summary: pd.DataFrame, output_dir: Path) -> list[Path]:
 
 
 def _winner_sentence(frame: pd.DataFrame) -> str:
-    eligible = frame.loc[
-        frame.get("ranking_eligible", frame["passes_diagnostic_screen"])
-        & frame["pipeline_tier"].isin(["confirmatory", "exploratory"])
-    ].sort_values("empirical_sd_h1")
+    selected = select_best_pipelines(frame)
+    eligible = selected.loc[selected["selected_pipeline"].notna()]
     if eligible.empty:
-        return "Ни один кандидат не прошёл заданный диагностический допуск."
+        if "scientific_sample_size_ok" in frame.columns and not bool(
+            frame["scientific_sample_size_ok"].all()
+        ):
+            return (
+                "Отбор не выполнен: недостаточно повторений для научного рейтинга. "
+                "Результаты оставлены диагностическими."
+            )
+        return "Отбор не дал кандидата после заданного диагностического экрана."
+    if len(eligible) > 1:
+        return (
+            "Есть выбранные пайплайны в нескольких информационных и временных "
+            "контурах; см. отдельные строки отбора ниже."
+        )
     winner = eligible.iloc[0]
-    reduction = 100.0 * float(winner["variance_reduction_vs_welch"])
+    reduction = 100.0 * float(winner["selected_variance_reduction_vs_welch"])
     return (
-        f"Минимальное наблюдаемое SD среди прошедших допуск: "
-        f"**{winner['pipeline_name_ru']}**; "
+        f"Выбран пайплайн **{winner['selected_pipeline_name_ru']}** по критерию "
+        f"минимального эмпирического SD после диагностического экрана; "
         f"снижение дисперсии относительно Welch: **{reduction:.1f}%**, "
-        f"мощность: **{100.0 * float(winner['power']):.1f}%**. "
+        f"SD: **{float(winner['selected_empirical_sd_h1']):.4f}**, "
+        f"время: **{float(winner['selected_median_runtime_ms']):.2f} мс**. "
         "Это численное ранжирование, а не доказательство превосходства "
         "над близкими кандидатами."
     )
@@ -262,8 +274,19 @@ def _compact_table(frame: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "Пайплайн": frame["pipeline_name_ru"],
+            "Режим информации": frame.get(
+                "race_information_mode", pd.Series("experiment_only", index=frame.index)
+            ),
+            "Временной доступ": frame.get(
+                "temporal_mode", pd.Series("pre_treatment_only", index=frame.index)
+            ),
+            "Estimand": frame.get("estimand_id", frame["estimand"]),
+            "Повторов": frame["n_trials"],
             "Контур": frame["pipeline_tier"],
             "Диагностический статус": frame["diagnostic_status"],
+            "Допущен в рейтинг": frame.get(
+                "ranking_eligible", pd.Series(False, index=frame.index)
+            ),
             "Bias": frame["bias_h1"].round(4),
             "SD": frame["empirical_sd_h1"].round(4),
             "SE/SD": frame["se_to_empirical_sd"].round(3),
@@ -391,6 +414,15 @@ def _render_report(
                 SCENARIOS[scenario_id].purpose_ru,
                 "",
                 _winner_sentence(frame),
+                "",
+                "### Отбор по сопоставимым контурам",
+                "",
+            ]
+        )
+        selection = select_best_pipelines(frame)
+        lines.append(_markdown_table(selection))
+        lines.extend(
+            [
                 "",
                 "### Цепочка A/B/C",
                 "",
@@ -579,6 +611,7 @@ def main() -> None:
         raw,
         alpha=report_config.alpha,
     )
+    selection = select_best_pipelines(summary)
     memory = profile_synthetic_pipeline_memory(config)
     if args.merge_existing:
         memory_path = output_dir / "memory_profile.csv"
@@ -627,6 +660,11 @@ def main() -> None:
         encoding="utf-8-sig",
     )
     russian.to_csv(output_dir / "summary_ru.csv", index=False, encoding="utf-8-sig")
+    selection.to_csv(
+        output_dir / "selection.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
     catalog.to_csv(
         output_dir / "pipeline_catalog.csv",
         index=False,
@@ -660,6 +698,11 @@ def main() -> None:
         "rows": int(len(raw)),
         "successful_rows": int((raw["status"] == "ok").sum()),
         "raw_results_saved": not args.no_save_raw,
+        "selection_file": "selection.csv",
+        "selection_criterion": (
+            "diagnostic screen + scientific sample size; min empirical SD, "
+            "then runtime, then pipeline ID"
+        ),
         "refreshed_pipelines": list(config.pipeline_ids or ()),
         "package_versions": {
             package: _package_version(package)

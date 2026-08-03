@@ -113,6 +113,10 @@ const raw = {
 };
 const summaryText = await fs.readFile(path.join(inputDir, "summary.csv"), "utf8");
 const summary = csvRows(summaryText);
+const selectionText = await fs
+  .readFile(path.join(inputDir, "selection.csv"), "utf8")
+  .catch(() => "");
+const selection = selectionText ? csvRows(selectionText) : { headers: [], values: [] };
 const catalogText = await fs.readFile(path.join(inputDir, "pipeline_catalog.csv"), "utf8");
 const catalog = csvRows(catalogText);
 const rawIndex = indexByHeader(raw.headers);
@@ -136,22 +140,23 @@ const allRaw = [rawHeaders, ...rawWithHelpers];
 const rawLastColumn = excelColumn(rawHeaders.length - 1);
 const rawLastRow = allRaw.length;
 
+const summaryIndex = indexByHeader(summary.headers);
 const observed = new Map();
-for (const row of raw.values) {
+for (const row of summary.values) {
   const key = [
-    row[rawIndex.pipeline],
-    row[rawIndex.race_information_mode],
-    row[rawIndex.temporal_mode],
-    row[rawIndex.estimand_id],
+    row[summaryIndex.pipeline],
+    row[summaryIndex.race_information_mode],
+    row[summaryIndex.temporal_mode],
+    row[summaryIndex.estimand_id],
   ].join("\u0001");
   if (!observed.has(key)) {
     observed.set(key, {
-      pipeline: row[rawIndex.pipeline],
-      pipeline_name_ru: row[rawIndex.pipeline_name_ru],
-      pipeline_tier: row[rawIndex.pipeline_tier],
-      race_information_mode: row[rawIndex.race_information_mode],
-      temporal_mode: row[rawIndex.temporal_mode],
-      estimand_id: row[rawIndex.estimand_id],
+      pipeline: row[summaryIndex.pipeline],
+      pipeline_name_ru: row[summaryIndex.pipeline_name_ru],
+      pipeline_tier: row[summaryIndex.pipeline_tier],
+      race_information_mode: row[summaryIndex.race_information_mode],
+      temporal_mode: row[summaryIndex.temporal_mode],
+      estimand_id: row[summaryIndex.estimand_id],
     });
   }
 }
@@ -169,8 +174,9 @@ const methods = workbook.worksheets.add("Методы");
 const pipelines = workbook.worksheets.add("Пайплайны");
 const sources = workbook.worksheets.add("Источники");
 const lists = workbook.worksheets.add("Справочники");
+const selectionSheet = workbook.worksheets.add("Выбор лучшего");
 
-for (const sheet of [dashboard, fullRuns, aggregates, methods, pipelines, sources, lists]) {
+for (const sheet of [dashboard, fullRuns, aggregates, methods, pipelines, sources, lists, selectionSheet]) {
   sheet.showGridLines = false;
 }
 
@@ -291,15 +297,42 @@ sources.getRange("C:C").format.columnWidth = 90;
 sources.getRange(`A1:C${sourceRows.length + 1}`).format.font = { name: "Aptos", size: 9 };
 sources.getRange("A1:C1").format = headerFormat;
 
+if (selection.headers.length > 0) {
+  const selectionLast = excelColumn(selection.headers.length - 1);
+  selectionSheet.getRange(`A1:${selectionLast}${selection.values.length + 1}`).values = [
+    selection.headers,
+    ...selection.values,
+  ];
+  selectionSheet.getRange(`A1:${selectionLast}1`).format = headerFormat;
+  selectionSheet.freezePanes.freezeRows(1);
+  selectionSheet.tables.add(
+    `A1:${selectionLast}${selection.values.length + 1}`,
+    true,
+    "BestPipelineSelection",
+  );
+  selectionSheet.getRange(`A1:${selectionLast}${selection.values.length + 1}`).format.font = {
+    name: "Aptos",
+    size: 9,
+  };
+  selectionSheet.getRange("A:A").format.columnWidth = 24;
+  selectionSheet.getRange("B:D").format.columnWidth = 22;
+  selectionSheet.getRange("G:G").format.columnWidth = 34;
+  selectionSheet.getRange("L:M").format.columnWidth = 30;
+} else {
+  selectionSheet.getRange("A1").values = [[
+    "selection.csv отсутствует: запуск не содержал агрегированного критерия отбора.",
+  ]];
+}
+
 const listValues = {
-  information: ["Все", ...distinct(raw.values.map((row) => row[rawIndex.race_information_mode]))],
-  temporal: ["Все", ...distinct(raw.values.map((row) => row[rawIndex.temporal_mode]))],
-  scenario: ["Все", ...distinct(raw.values.map((row) => row[rawIndex.data_scenario]))],
-  tier: ["Все", ...distinct(raw.values.map((row) => row[rawIndex.pipeline_tier]))],
-  estimand: ["Все", ...distinct(raw.values.map((row) => row[rawIndex.estimand_id]))],
-  runFamily: rawIndex.run_family === undefined
+  information: ["Все", ...distinct(summary.values.map((row) => row[summaryIndex.race_information_mode]))],
+  temporal: ["Все", ...distinct(summary.values.map((row) => row[summaryIndex.temporal_mode]))],
+  scenario: ["Все", ...distinct(summary.values.map((row) => row[summaryIndex.data_scenario]))],
+  tier: ["Все", ...distinct(summary.values.map((row) => row[summaryIndex.pipeline_tier]))],
+  estimand: ["Все", ...distinct(summary.values.map((row) => row[summaryIndex.estimand_id]))],
+  runFamily: summaryIndex.run_family === undefined
     ? ["Все"]
-    : ["Все", ...distinct(raw.values.map((row) => row[rawIndex.run_family]))],
+    : ["Все", ...distinct(summary.values.map((row) => row[summaryIndex.run_family]))],
 };
 const listRows = [
   ["Информационный режим", ...listValues.information],
@@ -317,7 +350,7 @@ dashboard.getRange("A1:L1").merge();
 dashboard.getRange("A1").values = [["VarWar: дашборд гонки пайплайнов РКИ"]];
 dashboard.getRange("A1:L1").format = titleFormat;
 dashboard.getRange("A2:L2").merge();
-dashboard.getRange("A2").values = [["Фильтры управляют формулами ниже; компактные trial-level строки находятся на листе «Полные прогоны», полный raw CSV с diagnostics сохранён рядом с книгой. Рейтинг не следует интерпретировать как доказательство при малом числе повторений."]];
+dashboard.getRange("A2").values = [["Фильтры агрегируют лист «Агрегированные результаты»; компактные trial-level строки находятся на листе «Полные прогоны», полный raw CSV с diagnostics сохранён рядом с книгой. Рейтинг не следует интерпретировать как доказательство при малом числе повторений."]];
 dashboard.getRange("A2:L2").format = { fill: pale, font: { italic: true, color: "#44546A" }, wrapText: true };
 dashboard.getRange("A3:B8").values = [
   ["Режим информации гонки", "Все"],
@@ -340,7 +373,7 @@ dashboard.getRange("D3:F7").values = [
   ["Проверка ошибки I рода", "H0", "Доля p-value < alpha"],
   ["Доступ к будущему", "Фильтр", "post_treatment_allowed не смешивается с pre-only"],
   ["Внешняя информация", "Фильтр", "panel_prior отдельно от experiment_only"],
-  ["Источник истины", "raw", "Каждая строка = estimator × trial × hypothesis"],
+  ["Источник формул", "aggregates", "Дашборд считает по листу агрегатов; raw CSV хранит trial × hypothesis"],
 ];
 dashboard.getRange("D3:E7").format = { fill: green, font: { bold: true, color: navy } };
 dashboard.getRange("F3:F7").format = { fill: pale, wrapText: true };
@@ -363,32 +396,32 @@ const dashboardData = dashboardRows.map((row) => [
 ]);
 const dashboardEnd = tableStart + dashboardData.length;
 dashboard.getRange(`A${tableStart + 1}:N${dashboardEnd}`).values = dashboardData;
-const rawSheet = "'Полные прогоны'";
-const r = (header) => `${rawSheet}!$${excelColumn(rawHeaders.indexOf(header))}$2:$${excelColumn(rawHeaders.indexOf(header))}$${rawLastRow}`;
+// The dashboard reads sufficient aggregates, not trial-level rows. This keeps
+// filtering responsive and leaves the full raw CSV as the canonical detail.
+const summarySheet = "'Агрегированные результаты'";
+const sr = (header) => `${summarySheet}!$${excelColumn(summaryIndex[header])}$2:$${excelColumn(summaryIndex[header])}$${summary.values.length + 1}`;
 for (let rowNumber = tableStart + 1; rowNumber <= dashboardEnd; rowNumber += 1) {
   const criteria = [
-    `${r("pipeline")},$A${rowNumber}`,
-    `${r("race_information_mode")},IF($B$3="Все","*",$B$3)`,
-    `${r("temporal_mode")},IF($B$4="Все","*",$B$4)`,
-    `${r("data_scenario")},IF($B$5="Все","*",$B$5)`,
-    `${r("pipeline_tier")},IF($B$6="Все","*",$B$6)`,
-    `${r("estimand_id")},IF($B$7="Все","*",$B$7)`,
+    `${sr("pipeline")},$A${rowNumber}`,
+    `${sr("race_information_mode")},IF($B$3="Все","*",$B$3)`,
+    `${sr("temporal_mode")},IF($B$4="Все","*",$B$4)`,
+    `${sr("data_scenario")},IF($B$5="Все","*",$B$5)`,
+    `${sr("pipeline_tier")},IF($B$6="Все","*",$B$6)`,
+    `${sr("estimand_id")},IF($B$7="Все","*",$B$7)`,
   ];
-  if (rawIndex.run_family !== undefined) {
-    criteria.push(`${r("run_family")},IF($B$8="Все","*",$B$8)`);
+  if (summaryIndex.run_family !== undefined) {
+    criteria.push(`${sr("run_family")},IF($B$8="Все","*",$B$8)`);
   }
   const common = criteria.join(",");
-  const h1 = `${common},${r("hypothesis")},"H1",${r("status")},"ok"`;
-  const h0 = `${common},${r("hypothesis")},"H0",${r("status")},"ok"`;
-  const h1Count = `COUNTIFS(${h1})`;
-  const h0Count = `COUNTIFS(${h0})`;
-  const effectSum = `SUMIFS(${r("effect")},${h1})`;
-  const effectSqSum = `SUMIFS(${r("effect_sq")},${h1})`;
-  const seSum = `SUMIFS(${r("standard_error")},${h1})`;
-  const covered = `SUMIFS(${r("covered_true_effect")},${h1})`;
-  const fpr = `COUNTIFS(${common},${r("hypothesis")},"H0",${r("status")},"ok",${r("p_value")},"<"&0.05)`;
-  const power = `COUNTIFS(${common},${r("hypothesis")},"H1",${r("status")},"ok",${r("p_value")},"<"&0.05)`;
-  const runtimeSum = `SUMIFS(${r("end_to_end_runtime_ms")},${h1})`;
+  const h1Count = `SUMIFS(${sr("n_trials")},${common})`;
+  const h0Count = h1Count;
+  const effectSum = `SUMIFS(${sr("sum_effect_h1")},${common})`;
+  const effectSqSum = `SUMIFS(${sr("sum_effect_sq_h1")},${common})`;
+  const seSum = `SUMIFS(${sr("sum_se_h1")},${common})`;
+  const covered = `SUMIFS(${sr("coverage_count_h1")},${common})`;
+  const fpr = `SUMIFS(${sr("false_positive_count_h0")},${common})`;
+  const power = `SUMIFS(${sr("power_count_h1")},${common})`;
+  const runtimeSum = `SUMIFS(${sr("runtime_total_ms_h1")},${common})`;
   dashboard.getRange(`G${rowNumber}:N${rowNumber}`).formulas = [[
     `=IFERROR(${h1Count},"")`,
     `=IFERROR(${effectSum}/${h1Count},"")`,
@@ -429,8 +462,11 @@ if (!skipPreviews) {
     ["Агрегированные результаты", `A1:${summaryLast}${Math.min(summary.values.length + 1, 24)}`, "aggregates.png"],
     ["Методы", `A1:G${methodRows.length + 1}`, "methods.png"],
     ["Пайплайны", `A1:${excelColumn(catalogHeaders.length - 1)}${Math.min(catalog.values.length + 1, 24)}`, "pipelines.png"],
-    ["Источники", `A1:C${sourceRows.length + 1}`, "sources.png"],
-  ]) {
+  ["Источники", `A1:C${sourceRows.length + 1}`, "sources.png"],
+  ...(selection.headers.length > 0
+    ? [["Выбор лучшего", `A1:${excelColumn(selection.headers.length - 1)}${Math.min(selection.values.length + 1, 24)}`, "selection.png"]]
+    : []),
+]) {
     const image = await workbook.render({ sheetName, range, scale: 1, format: "png" });
     await fs.writeFile(path.join(previewDir, fileName), new Uint8Array(await image.arrayBuffer()));
   }

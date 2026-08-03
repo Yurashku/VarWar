@@ -33,6 +33,7 @@ from varwar.pipeline_benchmark import (
     pipeline_definitions,
     profile_synthetic_pipeline_memory,
     run_synthetic_pipeline_race,
+    select_best_pipelines,
     summarize_synthetic_pipeline_race,
 )
 from varwar.estimators import (
@@ -125,6 +126,7 @@ __all__ = [
     "run_synthetic_pipeline_race",
     "profile_synthetic_pipeline_memory",
     "summarize_synthetic_pipeline_race",
+    "select_best_pipelines",
     "format_pipeline_summary_ru",
     "pipeline_definitions",
     "PipelineTier",
