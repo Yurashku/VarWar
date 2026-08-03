@@ -18,8 +18,8 @@
 | `cupac_linear_A_plus_B__hypex_ab` | CUPAC A → отдельный linear B → HypEx Welch | исследовательский: экспертно safe in-time признаки |
 | `cupac_linear_A_plus_B_plus_C__hypex_ab` | A → B → gated linear C → HypEx Welch | исследовательская зона C |
 | `cupac_quadratic_A__hypex_ab` | quadratic temporal CUPAC A → HypEx Welch | ограниченная нелинейность зоны A |
-| `regression_adjustment` | OLS + HC1 | линейная ковариатная коррекция внутри estimator |
-| `ml_rate` | cross-fitted ridge → interacted OLS + HC1 | гибкая оценка без отдельного transformed target |
+| `regression_adjustment` | centered Lin-style regression + HC2 | линейная ковариатная коррекция внутри estimator |
+| `ml_rate` | cross-fitted ridge → interacted regression + HC2 | гибкая оценка без отдельного transformed target |
 | `winsorized__hypex_ab` | control-winsorization → HypEx Welch | отдельный изменённый estimand |
 
 Все локальные CUPAC-варианты работают с одним доступным датасетом. Этап A
@@ -57,3 +57,21 @@
 Результаты актуальной синтетической гонки сохраняются отдельно от
 спецификации методов в `results/pipeline_race_v2/`. Каталог каждого запуска
 фиксирует состав, estimand, контур применимости и предыдущий пайплайн цепочки.
+
+## Декартова гонка компонентов
+
+Для RCT доступен отдельный генератор `build_cartesian_rct_pipelines`. Он
+перебирает совместимые базовые оценщики (`welch`, `hypex_ab`, permutation,
+bootstrap, regression adjustment, ML-RATE и два ATE matching) и target-wrapper-ы
+(`raw`, CUPED, CUPAC A, A+B, A+B+C, quadratic A и panel-prior варианты).
+Каждая строка получает ID вида
+`cartesian__<estimator>__<transformer>` и сохраняет отдельные поля режима
+информации и временного доступа. Генетическое укрупнение страт сюда не входит:
+это design preprocessor, который образует отдельную гонку и меняет дизайн до
+оценки.
+
+Для всех моделей с обучением фиксируются правила выбора гиперпараметров:
+temporal CUPAC валидирует регуляризацию на историческом хвосте, ML-RATE
+выбирает её внутри каждого cross-fitting-фолда, а panel-prior CUPAC отдельно
+подбирает силу внешнего prior. Текущий post-treatment outcome не используется
+для обучения pre-treatment моделей.

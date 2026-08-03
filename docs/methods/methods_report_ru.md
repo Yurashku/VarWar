@@ -536,3 +536,20 @@ CUPAC, winsorization и GA нельзя строить отдельный рей
 13. Rigdon, J. and Hudgens, M. (2015). [Randomization inference for treatment effects on a binary outcome](https://pmc.ncbi.nlm.nih.gov/articles/PMC4459717/).
 14. SciPy. [`ttest_ind`, `ks_2samp` and `permutation_test`](https://docs.scipy.org/doc/scipy/reference/stats.html).
 15. pandas. [Categorical data](https://pandas.pydata.org/docs/user_guide/categorical.html).
+
+## Актуальные уточнения реализации
+
+Некоторые строки выше сохранены как исторический отчёт и могут описывать
+старую версию кода. В текущей RCT-гонке:
+
+- `bootstrap_mean_diff` использует studentized bootstrap-t: интервал строится
+  по распределению bootstrap-статистики `(effect - effect_boot) / se_boot`, а
+  не как простой percentile-интервал;
+- `regression_adjustment` и `ml_rate` используют HC2-оценку ковариации;
+- `ml_rate` выполняет cross-fitting, а силу ridge выбирает внутри каждого
+  обучающего фолда. Outcome из отложенного фолда не участвует в его прогнозе;
+- temporal CUPAC выбирает ridge по holdout-хвосту исторической пары
+  `lag2 -> lag1`, затем переобучает модель на всей разрешённой исторической
+  зоне. Текущий post-treatment target не используется для выбора модели;
+- panel-prior CUPAC отдельно выбирает силу внешнего prior по временной
+  проверке и допускает полное игнорирование prior при несовпадении панели.

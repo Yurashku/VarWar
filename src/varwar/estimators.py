@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+import os
+import tempfile
+import threading
+from dataclasses import dataclass, replace
 from importlib import import_module
 from typing import Any, Callable, Mapping
 
@@ -10,7 +13,16 @@ import pandas as pd
 
 from varwar.core import EstimateResult, ExperimentSpec, require_columns
 from varwar.hypex_backend import HypExBackendUnavailable, estimate_with_hypex_abtest
-from varwar.stats import normal_two_sided_p, safe_divide, t_critical, t_two_sided_p
+from varwar.stats import (
+    normal_critical,
+    normal_two_sided_p,
+    safe_divide,
+    t_critical,
+    t_two_sided_p,
+)
+
+
+_HYPEX_MATCHING_CWD_LOCK = threading.Lock()
 
 
 def _float_column(data: pd.DataFrame, column: str) -> np.ndarray:
@@ -39,6 +51,24 @@ def _mean_var_n(values: np.ndarray) -> tuple[float, float, int]:
     mean = float(values.mean())
     var = float(values.var(ddof=1)) if n > 1 else math.nan
     return mean, var, n
+
+
+def _robust_covariance(
+    design: np.ndarray,
+    residuals: np.ndarray,
+    kind: str = "HC2",
+) -> np.ndarray:
+    """Closed-form heteroskedastic covariance with leverage correction."""
+
+    inverse = np.linalg.pinv(design.T @ design)
+    leverage = np.einsum("ij,jk,ik->i", design, inverse, design)
+    if kind == "HC2":
+        omega = residuals**2 / np.maximum(1.0 - leverage, 1e-12)
+    elif kind == "HC1":
+        omega = residuals**2 * design.shape[0] / max(design.shape[0] - design.shape[1], 1)
+    else:
+        raise ValueError("kind must be HC1 or HC2.")
+    return inverse @ (design.T @ (omega[:, None] * design)) @ inverse
 
 
 def _build_result(
@@ -80,25 +110,47 @@ def _cross_fitted_ridge_predictions(
     n_splits: int,
     ridge: float,
     seed: int,
-) -> np.ndarray:
+    ridge_grid: tuple[float, ...] = (0.0, 1e-8, 1e-6, 1e-4, 1e-2, 1e-1, 1.0),
+    auto_tune_ridge: bool = True,
+) -> tuple[np.ndarray, tuple[float, ...]]:
     if n_splits < 2:
         raise ValueError("n_splits must be at least 2.")
     rng = np.random.default_rng(seed)
     indices = rng.permutation(x.shape[0])
     folds = np.array_split(indices, min(n_splits, x.shape[0]))
     predictions = np.empty(x.shape[0], dtype=float)
+    selected_ridges: list[float] = []
     all_indices = np.arange(x.shape[0])
-    for fold in folds:
+    for fold_number, fold in enumerate(folds):
         train_mask = np.ones(x.shape[0], dtype=bool)
         train_mask[fold] = False
         train_idx = all_indices[train_mask]
+        selected = float(ridge)
+        if auto_tune_ridge and train_idx.size >= x.shape[1] + 8:
+            holdout_size = max(2, int(np.ceil(train_idx.size * 0.2)))
+            inner_train = train_idx[:-holdout_size]
+            inner_valid = train_idx[-holdout_size:]
+            if inner_train.size > x.shape[1] + 1:
+                candidates = tuple(
+                    sorted({float(value) for value in ridge_grid if float(value) >= 0.0})
+                ) or (selected,)
+                scores: dict[float, float] = {}
+                for candidate in candidates:
+                    prediction = _ridge_predict(
+                        x[inner_train], y[inner_train], x[inner_valid], candidate
+                    )
+                    scores[candidate] = float(
+                        np.mean((y[inner_valid] - prediction) ** 2)
+                    )
+                selected = min(candidates, key=lambda value: (scores[value], value))
+        selected_ridges.append(selected)
         predictions[fold] = _ridge_predict(
             x[train_idx],
             y[train_idx],
             x[fold],
-            ridge,
+            selected,
         )
-    return predictions
+    return predictions, tuple(selected_ridges)
 
 
 def _ridge_predict(
@@ -114,8 +166,12 @@ def _ridge_predict(
     y_mean = float(y_train.mean())
     y_centered = y_train - y_mean
     xtx = x_centered.T @ x_centered
-    penalty = max(float(ridge), 0.0) * np.eye(xtx.shape[0], dtype=float)
-    coef = np.linalg.solve(xtx + penalty, x_centered.T @ y_centered)
+    penalty_value = max(float(ridge), 0.0)
+    if penalty_value == 0.0:
+        coef, *_ = np.linalg.lstsq(xtx, x_centered.T @ y_centered, rcond=None)
+    else:
+        penalty = penalty_value * np.eye(xtx.shape[0], dtype=float)
+        coef = np.linalg.solve(xtx + penalty, x_centered.T @ y_centered)
     return y_mean + ((x_predict - x_mean) / x_std) @ coef
 
 
@@ -163,8 +219,10 @@ class DifferenceInMeansEstimator:
 class RegressionAdjustmentEstimator:
     """OLS adjustment for randomized experiments with numeric covariates.
 
-    Uses a heteroskedasticity-robust HC1 standard error for the treatment
-    coefficient. This keeps the implementation closed-form and memory bounded.
+    Uses centered covariates, treatment interactions and HC2 inference.  This
+    is the assumption-lean randomized-experiment form: interactions protect
+    the treatment coefficient against effect heterogeneity and unequal arm
+    sizes while keeping the calculation closed-form.
     """
 
     name: str = "regression_adjustment"
@@ -179,7 +237,13 @@ class RegressionAdjustmentEstimator:
         y = _float_column(data, spec.target_col)
         treatment = (np.asarray(data[spec.treatment_col]) == spec.treatment_value).astype(float)
         columns = [np.ones(len(data), dtype=float), treatment]
-        columns.extend(_float_column(data, col) for col in features)
+        centered_covariates = []
+        for col in features:
+            values = _float_column(data, col)
+            centered = values - float(np.nanmean(values))
+            centered_covariates.append(centered)
+            columns.append(centered)
+        columns.extend(treatment * values for values in centered_covariates)
         x = np.column_stack(columns)
         valid = np.isfinite(y) & np.isfinite(x).all(axis=1)
         x = x[valid]
@@ -189,11 +253,8 @@ class RegressionAdjustmentEstimator:
 
         beta, *_ = np.linalg.lstsq(x, y, rcond=None)
         residuals = y - x @ beta
-        xtx_inv = np.linalg.pinv(x.T @ x)
-        meat = x.T @ ((residuals**2)[:, None] * x)
         n, p = x.shape
-        hc1 = n / max(n - p, 1)
-        cov = hc1 * xtx_inv @ meat @ xtx_inv
+        cov = _robust_covariance(x, residuals, "HC2")
         effect = float(beta[1])
         se = math.sqrt(max(float(cov[1, 1]), 0.0))
         n_control = int(((np.asarray(data[spec.treatment_col]) == spec.control_value) & valid).sum())
@@ -206,7 +267,12 @@ class RegressionAdjustmentEstimator:
             n_control,
             n_treatment,
             spec.alpha,
-            {"features": ",".join(features), "se": "HC1"},
+            {
+                "features": ",".join(features),
+                "se": "HC2",
+                "interactions": True,
+                "covariates_centered": True,
+            },
         )
 
 
@@ -216,12 +282,16 @@ class MLRateEstimator:
 
     The nuisance model is a ridge predictor over numeric covariates. The final
     stage regresses the target on treatment, out-of-fold prediction, and the
-    treatment-by-prediction interaction with HC1 inference.
+    treatment-by-prediction interaction with HC2 inference. Ridge strength is
+    selected inside each training fold, so outcome rows in the held-out fold
+    cannot influence their own nuisance prediction.
     """
 
     name: str = "ml_rate"
     n_splits: int = 5
     ridge: float = 1e-6
+    ridge_grid: tuple[float, ...] = (0.0, 1e-8, 1e-6, 1e-4, 1e-2, 1e-1, 1.0)
+    auto_tune_ridge: bool = True
     seed: int = 20260710
     include_interaction: bool = True
 
@@ -248,12 +318,14 @@ class MLRateEstimator:
         x_valid = x[valid]
         if y_valid.size <= max(self.n_splits, x_valid.shape[1] + 2):
             raise ValueError("MLRateEstimator needs more rows for cross-fitting.")
-        predictions = _cross_fitted_ridge_predictions(
+        predictions, selected_ridges = _cross_fitted_ridge_predictions(
             x_valid,
             y_valid,
             n_splits=self.n_splits,
             ridge=self.ridge,
             seed=self.seed,
+            ridge_grid=self.ridge_grid,
+            auto_tune_ridge=self.auto_tune_ridge,
         )
         centered_pred = predictions - float(predictions.mean())
         columns = [
@@ -266,11 +338,8 @@ class MLRateEstimator:
         design = np.column_stack(columns)
         beta, *_ = np.linalg.lstsq(design, y_valid, rcond=None)
         residuals = y_valid - design @ beta
-        xtx_inv = np.linalg.pinv(design.T @ design)
-        meat = design.T @ ((residuals**2)[:, None] * design)
         n, p = design.shape
-        hc1 = n / max(n - p, 1)
-        cov = hc1 * xtx_inv @ meat @ xtx_inv
+        cov = _robust_covariance(design, residuals, "HC2")
         effect = float(beta[1])
         se = math.sqrt(max(float(cov[1, 1]), 0.0))
         n_control = int((treatment_valid == 0.0).sum())
@@ -287,9 +356,13 @@ class MLRateEstimator:
                 "features": ",".join(features),
                 "n_splits": self.n_splits,
                 "ridge": self.ridge,
+                "ridge_auto_tuned": self.auto_tune_ridge,
+                "selected_ridges": ",".join(
+                    f"{value:.12g}" for value in selected_ridges
+                ),
                 "include_interaction": self.include_interaction,
                 "prediction_variance": float(predictions.var(ddof=1)),
-                "se": "HC1",
+                "se": "HC2",
             },
         )
 
@@ -659,44 +732,58 @@ class EnergyDistanceTestEstimator:
 class RandomizedTTestEstimator:
     """Randomized t-statistic with deterministic hedgehog weights.
 
-    The statistic uses alternating normalized weights within each arm and
-    Welch degrees of freedom for its two-sided p-value.
+    The statistic uses the same hedgehog weights in equally sized arms. Rows
+    are shuffled reproducibly before weighting, so the result is not an
+    accidental function of input order. This object is a homogeneity test,
+    not an ATE estimator; effect and confidence-interval fields are therefore
+    intentionally undefined.
     """
 
     name: str = "randomized_t_test"
+    seed: int = 20260731
 
     def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
         control, treatment = _group_arrays(data, spec)
         if control.size < 2 or treatment.size < 2:
             raise ValueError("Both groups need at least two finite observations.")
-        mean_c, var_c, n_c = _mean_var_n(control)
-        mean_t, var_t, n_t = _mean_var_n(treatment)
+        original_n_control = int(control.size)
+        original_n_treatment = int(treatment.size)
+        rng = np.random.default_rng(self.seed)
+        n_used = int(min(control.size, treatment.size))
+        control = control[rng.permutation(control.size)[:n_used]]
+        treatment = treatment[rng.permutation(treatment.size)[:n_used]]
+        _, var_c, n_c = _mean_var_n(control)
+        _, var_t, n_t = _mean_var_n(treatment)
         theta_t = _hedgehog_weights(n_t)
         theta_c = _hedgehog_weights(n_c)
         numerator = float(theta_t @ treatment - theta_c @ control)
-        denom = math.sqrt(
-            var_t * float(theta_t @ theta_t) + var_c * float(theta_c @ theta_c)
-        )
+        term_t = var_t * float(theta_t @ theta_t)
+        term_c = var_c * float(theta_c @ theta_c)
+        denom = math.sqrt(term_t + term_c)
         statistic = safe_divide(numerator, denom)
-        se2_c = var_c / n_c
-        se2_t = var_t / n_t
-        df_denom = (se2_c**2 / (n_c - 1)) + (se2_t**2 / (n_t - 1))
-        df = ((se2_c + se2_t) ** 2) / df_denom if df_denom > 0 else math.nan
+        df_denom = (term_c**2 / (n_c - 1)) + (term_t**2 / (n_t - 1))
+        df = ((term_c + term_t) ** 2) / df_denom if df_denom > 0 else math.nan
         p_value = t_two_sided_p(statistic, df)
-        effect = mean_t - mean_c
-        se = math.sqrt(se2_c + se2_t)
-        crit = t_critical(spec.alpha, df)
         return EstimateResult(
             estimator=self.name,
-            effect=effect,
-            standard_error=se,
+            effect=math.nan,
+            standard_error=math.nan,
             statistic=statistic,
             p_value=p_value,
-            ci_low=effect - crit * se if math.isfinite(crit) else math.nan,
-            ci_high=effect + crit * se if math.isfinite(crit) else math.nan,
+            ci_low=math.nan,
+            ci_high=math.nan,
             n_control=n_c,
             n_treatment=n_t,
-            diagnostics={"weights": "hedgehog", "df": df},
+            diagnostics={
+                "weights": "hedgehog",
+                "df": df,
+                "seed": self.seed,
+                "row_order": "seeded_shuffle_then_equal_arm_subsample",
+                "original_n_control": original_n_control,
+                "original_n_treatment": original_n_treatment,
+                "effect_definition": "not_an_ATE_estimator",
+                "theory_reference": "Klartag_and_Sodin_2012",
+            },
         )
 
 
@@ -713,9 +800,15 @@ class RandomizedWeightedMeanDiffEstimator:
     ``mu_g = sum_i w_gi * Y_gi``, где ``sum_i w_gi = 1``.
 
     При весах, не зависящих от target, оценка сохраняет математическое ожидание
-    среднего группы. Данные не изменяются на месте. Если задан ``unit_col``,
-    он используется для стабильного порядка перед перемешиванием; иначе при
-    уникальном индексе сначала используется индекс DataFrame.
+    среднего группы. Однако конструкция Klartag--Sodin обосновывает скорость
+    нормальной аппроксимации центрированной взвешенной суммы, а не выигрыш по
+    дисперсии оценки среднего. Для используемого положительного префикса
+    эффективный размер выборки растёт лишь порядка ``sqrt(n)``. Поэтому метод
+    является исследовательским контролем и не должен заменять Welch baseline.
+
+    Данные не изменяются на месте. Если задан ``unit_col``, он используется
+    для стабильного порядка перед перемешиванием; иначе при уникальном индексе
+    сначала используется индекс DataFrame.
     """
 
     name: str = "randomized_weighted_mean_diff"
@@ -780,6 +873,9 @@ class RandomizedWeightedMeanDiffEstimator:
                 "effective_n_treatment": float(1.0 / (weights_t @ weights_t)),
                 "unweighted_mean_difference": float(mean_t - mean_c),
                 "estimation_target": "difference_of_normalized_hedgehog_weighted_means",
+                "theory_scope": "weighted_sum_normal_approximation_not_efficiency",
+                "theory_reference": "Klartag_and_Sodin_2012",
+                "recommended_role": "research_control_not_primary_ATE_baseline",
             },
         )
 
@@ -877,6 +973,35 @@ def _permutation_mean_differences(
     return effects
 
 
+def _permutation_studentized_statistics(
+    control: np.ndarray,
+    treatment: np.ndarray,
+    n_resamples: int,
+    seed: int,
+) -> np.ndarray:
+    """Monte Carlo permutation distribution of the Welch studentized statistic."""
+
+    if n_resamples < 1:
+        raise ValueError("n_resamples must be positive.")
+    pooled = np.concatenate([control, treatment])
+    n_control = int(control.size)
+    n_treatment = int(treatment.size)
+    rng = np.random.default_rng(seed)
+    shuffled = pooled.copy()
+    statistics = np.empty(n_resamples, dtype=float)
+    for index in range(n_resamples):
+        rng.shuffle(shuffled)
+        left = shuffled[:n_control]
+        right = shuffled[n_control:]
+        se2 = left.var(ddof=1) / n_control + right.var(ddof=1) / n_treatment
+        statistics[index] = (
+            (right.mean() - left.mean()) / math.sqrt(se2)
+            if se2 > 0.0
+            else math.nan
+        )
+    return statistics[np.isfinite(statistics)]
+
+
 @dataclass
 class PermutationMeanTestEstimator:
     name: str = "permutation_mean_test"
@@ -918,10 +1043,10 @@ class PermutationMeanTestEstimator:
 class PermutationMeanDiffEstimator:
     """Estimate a mean difference with permutation-calibrated inference.
 
-    The confidence interval is obtained by inverting the two-sided
-    randomization test: null-distribution quantiles are reflected around the
-    observed effect. This is justified for exchangeable outcomes under the
-    sharp null and, for an effect interval, under a constant additive effect.
+    The p-value uses a Welch-studentized permutation statistic.  The interval
+    uses the same empirical pivotal scale around the observed difference; it
+    is a studentized permutation interval, not an exact inversion of a sharp
+    null test for arbitrary equality-of-means alternatives.
     """
 
     name: str = "permutation_mean_diff"
@@ -936,15 +1061,22 @@ class PermutationMeanDiffEstimator:
             raise ValueError("Both groups need at least two finite observations.")
 
         effect = mean_t - mean_c
-        permuted = _permutation_mean_differences(
+        var_c = float(control.var(ddof=1))
+        var_t = float(treatment.var(ddof=1))
+        observed_se = math.sqrt(var_c / n_c + var_t / n_t)
+        if observed_se <= 0.0 or not math.isfinite(observed_se):
+            raise ValueError("Permutation studentization requires positive variance.")
+        observed_statistic = effect / observed_se
+        permuted = _permutation_studentized_statistics(
             control,
             treatment,
             self.n_resamples,
             self.seed,
         )
-        extreme = int(np.count_nonzero(np.abs(permuted) >= abs(effect)))
+        if permuted.size < max(20, self.n_resamples // 2):
+            raise ValueError("Too few finite permutation studentized replications.")
+        extreme = int(np.count_nonzero(np.abs(permuted) >= abs(observed_statistic)))
         permutation_p = (extreme + 1.0) / (self.n_resamples + 1.0)
-        se = float(permuted.std(ddof=1))
         lower_null, upper_null = np.quantile(
             permuted,
             [spec.alpha / 2.0, 1.0 - spec.alpha / 2.0],
@@ -952,30 +1084,45 @@ class PermutationMeanDiffEstimator:
         return EstimateResult(
             estimator=self.name,
             effect=effect,
-            standard_error=se,
-            statistic=safe_divide(effect, se),
+            standard_error=observed_se,
+            statistic=observed_statistic,
             p_value=permutation_p,
-            ci_low=float(effect - upper_null),
-            ci_high=float(effect - lower_null),
+            ci_low=float(effect - upper_null * observed_se),
+            ci_high=float(effect - lower_null * observed_se),
             n_control=n_c,
             n_treatment=n_t,
             diagnostics={
                 "n_resamples": self.n_resamples,
                 "seed": self.seed,
                 "p_value_method": "permutation_randomization",
-                "ci_method": "permutation_test_inversion_shifted",
-                "exchangeability_assumption": "sharp_null_or_constant_additive_effect",
+                "ci_method": "studentized_permutation_interval",
+                "exchangeability_assumption": "randomized_assignment",
+                "studentized_statistic": "welch",
             },
         )
 
 
 @dataclass
 class BootstrapMeanDiffEstimator:
-    """Bootstrap mean-difference estimator with percentile confidence interval."""
+    """Разность средних со studentized bootstrap-t выводом.
+
+    В каждой репликации контроль и тест ресэмплируются независимо, с
+    возвращением и с сохранением исходных размеров групп. Для репликации
+    строится pivotal-статистика
+
+    ``t* = ((mean_t* - mean_c*) - effect) / se*``.
+
+    Квантили одной и той же bootstrap-t статистики используются и для
+    доверительного интервала, и для двустороннего p-value. Это устраняет
+    прежнюю несогласованность percentile-интервала с нормальным p-value.
+    Репликации обрабатываются блоками: память зависит от ``batch_size``, а не
+    от произведения размера выборки на ``n_resamples``.
+    """
 
     name: str = "bootstrap_mean_diff"
     n_resamples: int = 999
     seed: int = 20260709
+    batch_size: int = 128
 
     def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
         control, treatment = _group_arrays(data, spec)
@@ -983,70 +1130,152 @@ class BootstrapMeanDiffEstimator:
             raise ValueError("Both groups need at least two finite observations.")
         if self.n_resamples < 2:
             raise ValueError("n_resamples must be at least two.")
+        if self.batch_size < 1:
+            raise ValueError("batch_size must be positive.")
 
         effect = float(treatment.mean() - control.mean())
+        var_c = float(control.var(ddof=1))
+        var_t = float(treatment.var(ddof=1))
+        observed_se = math.sqrt(var_c / control.size + var_t / treatment.size)
+        if not math.isfinite(observed_se) or observed_se <= 0.0:
+            raise ValueError("Studentized bootstrap requires a positive standard error.")
+
         rng = np.random.default_rng(self.seed)
         bootstrap_effects = np.empty(self.n_resamples, dtype=float)
-        for index in range(self.n_resamples):
-            control_indices = rng.integers(0, control.size, size=control.size)
-            treatment_indices = rng.integers(0, treatment.size, size=treatment.size)
-            bootstrap_effects[index] = float(
-                treatment[treatment_indices].mean()
-                - control[control_indices].mean()
+        pivots = np.empty(self.n_resamples, dtype=float)
+        valid_pivots = np.ones(self.n_resamples, dtype=bool)
+        for start in range(0, self.n_resamples, self.batch_size):
+            stop = min(start + self.batch_size, self.n_resamples)
+            size = stop - start
+            control_sample = control[
+                rng.integers(0, control.size, size=(size, control.size))
+            ]
+            treatment_sample = treatment[
+                rng.integers(0, treatment.size, size=(size, treatment.size))
+            ]
+            effects = treatment_sample.mean(axis=1) - control_sample.mean(axis=1)
+            replicate_se = np.sqrt(
+                control_sample.var(axis=1, ddof=1) / control.size
+                + treatment_sample.var(axis=1, ddof=1) / treatment.size
             )
-        se = float(bootstrap_effects.std(ddof=1))
-        lower, upper = np.quantile(
-            bootstrap_effects,
+            bootstrap_effects[start:stop] = effects
+            finite = np.isfinite(replicate_se) & (replicate_se > 0.0)
+            valid_pivots[start:stop] = finite
+            block_pivots = np.full(size, np.nan, dtype=float)
+            block_pivots[finite] = (effects[finite] - effect) / replicate_se[finite]
+            pivots[start:stop] = block_pivots
+
+        pivots = pivots[valid_pivots]
+        if pivots.size < max(20, self.n_resamples // 2):
+            raise ValueError("Too few finite studentized bootstrap replications.")
+        lower_t, upper_t = np.quantile(
+            pivots,
             [spec.alpha / 2.0, 1.0 - spec.alpha / 2.0],
         )
+        statistic = effect / observed_se
+        p_value = (1.0 + float(np.count_nonzero(np.abs(pivots) >= abs(statistic)))) / (
+            pivots.size + 1.0
+        )
+        bootstrap_se = float(bootstrap_effects.std(ddof=1))
         return EstimateResult(
             estimator=self.name,
             effect=effect,
-            standard_error=se,
-            statistic=safe_divide(effect, se),
-            p_value=normal_two_sided_p(safe_divide(effect, se)),
-            ci_low=float(lower),
-            ci_high=float(upper),
+            standard_error=observed_se,
+            statistic=statistic,
+            p_value=p_value,
+            ci_low=float(effect - upper_t * observed_se),
+            ci_high=float(effect - lower_t * observed_se),
             n_control=int(control.size),
             n_treatment=int(treatment.size),
             diagnostics={
                 "n_resamples": self.n_resamples,
+                "valid_resamples": int(pivots.size),
                 "seed": self.seed,
-                "ci_method": "percentile_bootstrap",
-                "p_value_method": "normal_approximation_from_bootstrap_se",
+                "batch_size": self.batch_size,
+                "ci_method": "studentized_bootstrap_t",
+                "p_value_method": "studentized_bootstrap_t",
+                "standard_error_method": "welch_plugin_studentizer",
+                "bootstrap_effect_standard_error": bootstrap_se,
+                "resampling": "independent_within_arm_with_replacement",
             },
         )
 
 
 @dataclass
 class TrimmedMeanEstimator:
+    """Yuen two-sample estimator and test for symmetrically trimmed means."""
+
     name: str = "trimmed_mean_diff"
     trim_fraction: float = 0.1
 
     def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
         control, treatment = _group_arrays(data, spec)
-        control_trimmed = _trim_values(control, self.trim_fraction)
-        treatment_trimmed = _trim_values(treatment, self.trim_fraction)
-        mean_c, var_c, n_c = _mean_var_n(control_trimmed)
-        mean_t, var_t, n_t = _mean_var_n(treatment_trimmed)
-        if n_c < 2 or n_t < 2:
+        mean_c, component_c, effective_c = _yuen_group_statistics(
+            control,
+            self.trim_fraction,
+        )
+        mean_t, component_t, effective_t = _yuen_group_statistics(
+            treatment,
+            self.trim_fraction,
+        )
+        if effective_c < 2 or effective_t < 2:
             raise ValueError("Trimmed groups need at least two observations.")
         effect = mean_t - mean_c
-        se2_c = var_c / n_c
-        se2_t = var_t / n_t
-        se = math.sqrt(se2_c + se2_t)
-        denom = (se2_c**2 / (n_c - 1)) + (se2_t**2 / (n_t - 1))
-        df = ((se2_c + se2_t) ** 2) / denom if denom > 0 else math.nan
+        se = math.sqrt(component_c + component_t)
+        denom = (component_c**2 / (effective_c - 1)) + (
+            component_t**2 / (effective_t - 1)
+        )
+        df = (
+            ((component_c + component_t) ** 2) / denom
+            if denom > 0
+            else math.nan
+        )
         return _build_result(
             self.name,
             effect,
             se,
             df,
-            n_c,
-            n_t,
+            int(control.size),
+            int(treatment.size),
             spec.alpha,
-            {"trim_fraction": self.trim_fraction},
+            {
+                "trim_fraction": self.trim_fraction,
+                "inference": "yuen_welch_trimmed_mean_test",
+                "effective_n_control": effective_c,
+                "effective_n_treatment": effective_t,
+            },
         )
+
+
+def _yuen_group_statistics(
+    values: np.ndarray,
+    fraction: float,
+) -> tuple[float, float, int]:
+    """Return trimmed mean, Yuen variance component, and effective size."""
+
+    if not 0 <= fraction < 0.5:
+        raise ValueError("trim_fraction must be in [0, 0.5).")
+    ordered = np.sort(np.asarray(values, dtype=float))
+    n = int(ordered.size)
+    removed_per_tail = int(math.floor(n * fraction))
+    effective_n = n - 2 * removed_per_tail
+    if effective_n < 2:
+        raise ValueError("Trim fraction leaves fewer than two observations.")
+    trimmed = ordered[removed_per_tail : n - removed_per_tail]
+    if removed_per_tail:
+        winsorized = ordered.copy()
+        winsorized[:removed_per_tail] = ordered[removed_per_tail]
+        winsorized[n - removed_per_tail :] = ordered[n - removed_per_tail - 1]
+    else:
+        winsorized = ordered
+    winsorized_variance = float(
+        winsorized.var(ddof=2 * removed_per_tail + 1)
+    )
+    return (
+        float(trimmed.mean()),
+        winsorized_variance / effective_n,
+        effective_n,
+    )
 
 
 @dataclass
@@ -1082,16 +1311,6 @@ class WinsorizedMeanEstimator:
                 "upper_quantile": self.upper_quantile,
             },
         )
-
-
-def _trim_values(values: np.ndarray, fraction: float) -> np.ndarray:
-    if not 0 <= fraction < 0.5:
-        raise ValueError("trim_fraction must be in [0, 0.5).")
-    sorted_values = np.sort(values)
-    k = int(math.floor(sorted_values.size * fraction))
-    if k == 0:
-        return sorted_values
-    return sorted_values[k:-k]
 
 
 def _winsorize_values(values: np.ndarray, lower: float, upper: float) -> np.ndarray:
@@ -1293,10 +1512,205 @@ class StratifiedDifferenceInMeansEstimator:
                 "used_weight": used_weight,
                 "degrees_of_freedom": df,
                 "weight_source": (
-                    "reference" if self.stratum_weights is not None else "observed_sample"
+                    "reference"
+                    if self.stratum_weights is not None
+                    else "experiment_sample"
                 ),
             },
         )
+
+
+@dataclass
+class PopulationWeightedStratifiedEstimator:
+    """Постстратифицированная оценка эффекта для известной популяции.
+
+    Внутри каждой страты эффект оценивается только по наблюдаемым A/B-группам,
+    но затем эффекты усредняются с заранее известными долями целевой популяции.
+    Веса не оцениваются по экспериментальному target и не нормируются по
+    составу экспериментальной выборки.
+
+    Такой метод оценивает population ATE и имеет информационное преимущество
+    перед обычным ``stratified_mean_diff``. Поэтому в R&D-таблицах он должен
+    находиться в отдельном режиме с явно отмеченными внешними весами.
+    """
+
+    population_weights: Mapping[Any, float]
+    name: str = "population_weighted_stratified"
+    sparse_policy: str = "error"
+
+    def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
+        result = StratifiedDifferenceInMeansEstimator(
+            name=self.name,
+            sparse_policy=self.sparse_policy,
+            stratum_weights=self.population_weights,
+        ).estimate(data, spec)
+        return EstimateResult(
+            estimator=self.name,
+            effect=result.effect,
+            standard_error=result.standard_error,
+            statistic=result.statistic,
+            p_value=result.p_value,
+            ci_low=result.ci_low,
+            ci_high=result.ci_high,
+            n_control=result.n_control,
+            n_treatment=result.n_treatment,
+            diagnostics={
+                **result.diagnostics,
+                "weight_source": "known_target_population",
+                "estimand": "population_ATE",
+            },
+        )
+
+
+@dataclass
+class CalibrationWeightedATEEstimator:
+    """Entropy-calibration estimator целевого population ATE.
+
+    В каждой A/B-группе положительные веса минимально отклоняются от
+    равномерных в смысле относительной энтропии и точно воспроизводят известные
+    средние pre-treatment признаков целевой популяции. После этого оценивается
+    разность двух калиброванных средних target.
+
+    Реализация следует постановке calibration/entropy balancing. Она требует
+    внешних population moments и оценивает эффект именно для этой популяции.
+    Стандартная ошибка является робастной для фиксированных нормированных
+    весов; неопределённость самих population moments в неё не входит.
+    """
+
+    population_moments: Mapping[str, float]
+    name: str = "calibration_reweighting"
+    tolerance: float = 1e-8
+    max_iterations: int = 500
+
+    def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
+        features = tuple(self.population_moments)
+        require_columns(data, [spec.treatment_col, spec.target_col, *features])
+        if not features:
+            raise ValueError("Calibration weighting requires population moments.")
+        if self.tolerance <= 0.0 or self.max_iterations < 1:
+            raise ValueError("Invalid calibration solver settings.")
+
+        y = _float_column(data, spec.target_col)
+        treatment = np.asarray(data[spec.treatment_col])
+        x = _feature_matrix(data, features)
+        valid = np.isfinite(y) & np.isfinite(x).all(axis=1)
+        target = np.asarray([self.population_moments[col] for col in features], dtype=float)
+        if not np.isfinite(target).all():
+            raise ValueError("Population moments must be finite.")
+
+        group_results: list[tuple[float, float, int, float, float]] = []
+        max_balance_error = 0.0
+        for group_value in (spec.control_value, spec.treatment_value):
+            mask = valid & (treatment == group_value)
+            if mask.sum() < 2:
+                raise ValueError("Both groups need at least two calibration rows.")
+            group_x = x[mask]
+            group_y = y[mask]
+            weights, balance_error = _entropy_calibration_weights(
+                group_x,
+                target,
+                tolerance=self.tolerance,
+                max_iterations=self.max_iterations,
+            )
+            mean = float(weights @ group_y)
+            sum_squared = float(weights @ weights)
+            denominator = 1.0 - sum_squared
+            if denominator <= 0.0:
+                raise ValueError("Calibration weights have effective sample size one.")
+            variance = float(
+                np.sum((weights**2) * ((group_y - mean) ** 2)) / denominator
+            )
+            group_results.append(
+                (mean, variance, int(group_y.size), 1.0 / sum_squared, float(weights.max()))
+            )
+            max_balance_error = max(max_balance_error, balance_error)
+
+        mean_c, var_c, n_c, ess_c, max_weight_c = group_results[0]
+        mean_t, var_t, n_t, ess_t, max_weight_t = group_results[1]
+        effect = mean_t - mean_c
+        se = math.sqrt(max(var_c + var_t, 0.0))
+        df = float(max(min(ess_c, ess_t) - 1.0, 1.0))
+        return _build_result(
+            self.name,
+            effect,
+            se,
+            df,
+            n_c,
+            n_t,
+            spec.alpha,
+            {
+                "estimand": "population_ATE",
+                "weight_source": "known_target_population_moments",
+                "calibration": "entropy_balancing_separately_within_arm",
+                "features": ",".join(features),
+                "max_balance_error": max_balance_error,
+                "effective_n_control": ess_c,
+                "effective_n_treatment": ess_t,
+                "max_weight_control": max_weight_c,
+                "max_weight_treatment": max_weight_t,
+                "variance": "fixed_weight_hajek_robust",
+            },
+        )
+
+
+def _entropy_calibration_weights(
+    x: np.ndarray,
+    target_mean: np.ndarray,
+    *,
+    tolerance: float,
+    max_iterations: int,
+) -> tuple[np.ndarray, float]:
+    """Solve the entropy-balancing dual with stable standardized features."""
+
+    center = x.mean(axis=0)
+    scale = x.std(axis=0, ddof=0)
+    constant = scale <= np.finfo(float).eps
+    if np.any(constant & (np.abs(target_mean - center) > tolerance)):
+        raise ValueError("A population moment is outside a constant sample feature.")
+    active = ~constant
+    if not np.any(active):
+        weights = np.full(x.shape[0], 1.0 / x.shape[0], dtype=float)
+        return weights, float(np.max(np.abs(weights @ x - target_mean)))
+
+    z = (x[:, active] - center[active]) / scale[active]
+    target_z = (target_mean[active] - center[active]) / scale[active]
+    try:
+        from scipy.optimize import minimize
+        from scipy.special import logsumexp
+    except Exception as exc:  # pragma: no cover - SciPy is a core dependency
+        raise RuntimeError(f"SciPy calibration solver is unavailable: {exc}") from exc
+
+    def objective(coef: np.ndarray) -> float:
+        scores = z @ coef
+        return float(logsumexp(scores) - math.log(z.shape[0]) - target_z @ coef)
+
+    def gradient(coef: np.ndarray) -> np.ndarray:
+        scores = z @ coef
+        scores -= float(scores.max())
+        weights = np.exp(scores)
+        weights /= weights.sum()
+        return weights @ z - target_z
+
+    result = minimize(
+        objective,
+        np.zeros(z.shape[1], dtype=float),
+        jac=gradient,
+        method="BFGS",
+        options={"gtol": tolerance, "maxiter": max_iterations},
+    )
+    if not result.success and np.linalg.norm(gradient(result.x), ord=np.inf) > tolerance * 10:
+        raise ValueError(f"Entropy calibration did not converge: {result.message}")
+    scores = z @ np.asarray(result.x, dtype=float)
+    scores -= float(scores.max())
+    weights = np.exp(scores)
+    weights /= weights.sum()
+    balance_error = float(np.max(np.abs(weights @ x - target_mean)))
+    scaled_tolerance = tolerance * max(1.0, float(np.max(np.abs(target_mean)))) * 10
+    if balance_error > scaled_tolerance:
+        raise ValueError(
+            f"Entropy calibration balance error {balance_error:.3g} exceeds tolerance."
+        )
+    return weights, balance_error
 
 
 @dataclass
@@ -1356,12 +1770,43 @@ class VarianceWeightedStratifiedEstimator:
 
 @dataclass
 class NearestNeighborMatchingEstimator:
-    """Covariate nearest-neighbor ATT estimator for baseline comparison."""
+    """Nearest-neighbour matching with explicit ATT or randomized ATE mode."""
 
     name: str = "nearest_neighbor_matching"
     chunk_size: int = 1024
+    estimand: str = "att"
 
     def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
+        if self.estimand not in {"att", "ate"}:
+            raise ValueError("NearestNeighborMatchingEstimator estimand must be 'att' or 'ate'.")
+        if self.estimand == "ate":
+            treated = self.__class__(name=self.name, chunk_size=self.chunk_size, estimand="att").estimate(data, spec)
+            reversed_spec = replace(spec, control_value=spec.treatment_value, treatment_value=spec.control_value)
+            control = self.__class__(name=self.name, chunk_size=self.chunk_size, estimand="att").estimate(data, reversed_spec)
+            n_total = treated.n_treatment + treated.n_control
+            weight_t = treated.n_treatment / n_total
+            weight_c = treated.n_control / n_total
+            effect = weight_t * treated.effect + weight_c * control.effect
+            se = math.sqrt((weight_t * treated.standard_error) ** 2 + (weight_c * control.standard_error) ** 2)
+            return EstimateResult(
+                estimator=self.name,
+                effect=effect,
+                standard_error=se,
+                statistic=safe_divide(effect, se),
+                p_value=t_two_sided_p(safe_divide(effect, se), max(n_total - 2, 1)),
+                ci_low=effect - t_critical(spec.alpha, max(n_total - 2, 1)) * se,
+                ci_high=effect + t_critical(spec.alpha, max(n_total - 2, 1)) * se,
+                n_control=treated.n_control,
+                n_treatment=treated.n_treatment,
+                diagnostics={
+                    "estimand": "ATE",
+                    "matching_mode": "symmetric_imputation",
+                    "att_effect": treated.effect,
+                    "atc_effect": control.effect,
+                    "att_standard_error": treated.standard_error,
+                    "atc_standard_error": control.standard_error,
+                },
+            )
         features = tuple(spec.pre_treatment_features())
         require_columns(data, [spec.treatment_col, spec.target_col, *features])
         if not features:
@@ -1409,6 +1854,280 @@ class NearestNeighborMatchingEstimator:
 
 
 @dataclass
+class HypExMatchingEstimator:
+    """Адаптер к matching-эстиматору из PyPI HypEx.
+
+    HypEx 1.0.6 строит matching в обе стороны и возвращает ATT, ATC и ATE.
+    Его стандартный профиль использует расстояние Махаланобиса, FAISS,
+    matching с возвращением и поправку смещения. VarWar извлекает строку ATE
+    из публичного ``Matching`` API без локального воспроизведения алгоритма.
+    """
+
+    name: str = "hypex_matching"
+    distance: str = "mahalanobis"
+    n_neighbors: int = 1
+    bias_estimation: bool = True
+    faiss_mode: str = "auto"
+
+    def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
+        features = tuple(spec.pre_treatment_features())
+        require_columns(data, [spec.treatment_col, spec.target_col, *features])
+        if not features:
+            raise ValueError("HypEx matching requires pre-treatment covariates.")
+        try:
+            from hypex import Matching
+            from hypex.dataset import (
+                Dataset,
+                ExperimentData,
+                FeatureRole,
+                TargetRole,
+                TreatmentRole,
+            )
+        except Exception as exc:  # pragma: no cover - optional integration
+            raise RuntimeError(f"PyPI HypEx matching is unavailable: {exc}") from exc
+
+        roles: dict[str, Any] = {
+            spec.treatment_col: TreatmentRole(int),
+            spec.target_col: TargetRole(float),
+        }
+        roles.update({feature: FeatureRole(float) for feature in features})
+        y = _float_column(data, spec.target_col)
+        x = _feature_matrix(data, features)
+        valid = np.isfinite(y) & np.isfinite(x).all(axis=1)
+        clean = data.loc[
+            valid,
+            [spec.treatment_col, spec.target_col, *features],
+        ].copy(deep=False)
+        treatment_values = np.asarray(clean[spec.treatment_col])
+        if (
+            np.count_nonzero(treatment_values == spec.control_value) < 2
+            or np.count_nonzero(treatment_values == spec.treatment_value) < 2
+        ):
+            raise ValueError("Both groups need at least two finite matching rows.")
+        try:
+            # HypEx 1.0.6 writes matched_indexes.csv to the process cwd and
+            # rounds its public UI resume.  Execute the same experiment core
+            # in a private cwd and read the raw MatchingAnalyzer table.
+            with _HYPEX_MATCHING_CWD_LOCK:
+                previous_cwd = os.getcwd()
+                try:
+                    isolated_cwd = tempfile.mkdtemp(prefix="varwar_hypex_matching_")
+                    os.chdir(isolated_cwd)
+                    output = Matching(
+                        distance=self.distance,
+                        bias_estimation=self.bias_estimation,
+                        quality_tests=[],
+                        faiss_mode=self.faiss_mode,
+                        n_neighbors=self.n_neighbors,
+                        encode_categories=False,
+                    ).experiment.execute(
+                        ExperimentData(Dataset(roles=roles, data=clean))
+                    )
+                    analysis_tables = output.analysis_tables
+                finally:
+                    os.chdir(previous_cwd)
+            if not analysis_tables:
+                raise RuntimeError("HypEx matching returned no analysis table.")
+            analysis = next(iter(analysis_tables.values())).data
+            row = analysis.loc["ATE"]
+            effect = float(row["Effect Size"])
+            se = float(row["Standard Error"])
+            p_value = float(row["P-value"])
+            ci_low = float(row["CI Lower"])
+            ci_high = float(row["CI Upper"])
+        except Exception as exc:  # pragma: no cover - depends on HypEx internals
+            raise RuntimeError(f"PyPI HypEx matching failed: {exc}") from exc
+
+        treatment = np.asarray(clean[spec.treatment_col])
+        return EstimateResult(
+            estimator=self.name,
+            effect=effect,
+            standard_error=se,
+            statistic=safe_divide(effect, se),
+            p_value=p_value,
+            ci_low=ci_low,
+            ci_high=ci_high,
+            n_control=int(np.count_nonzero(treatment == spec.control_value)),
+            n_treatment=int(np.count_nonzero(treatment == spec.treatment_value)),
+            diagnostics={
+                "backend": "pypi_hypex",
+                "estimand": "ATE",
+                "distance": self.distance,
+                "n_neighbors": self.n_neighbors,
+                "bias_estimation": self.bias_estimation,
+                "matching_direction": "two_sided_ATT_and_ATC",
+                "features": ",".join(features),
+                "raw_analysis_table": True,
+                "side_effects_isolated": True,
+            },
+        )
+
+
+@dataclass
+class OptimalTransportMatchingEstimator:
+    """Глобальное matching как дискретный optimal transport.
+
+    Все treated-объекты одновременно сопоставляются control-объектам так,
+    чтобы минимизировать суммарную квадратичную transport cost в
+    стандартизированном пространстве pre-treatment признаков. Массы treated
+    одинаковы, регуляризация отсутствует. Если control не меньше treated,
+    получается точный частичный Monge plan без возвращения. Иначе каждому
+    control разрешается минимально необходимая одинаковая capacity. Это
+    сохраняет ATT, но явно ослабляет ограничение уникальности пар.
+
+    Реализация использует точный solver SciPy ``linear_sum_assignment``.
+    Матрица стоимостей имеет размер
+    ``n_treatment * n_control * control_capacity``; защитный лимит
+    предотвращает случайное исчерпание памяти. Вывод является paired-t
+    inference, условным на найденном matching, и не учитывает неопределённость
+    выбора matching. Поэтому метод остаётся observational/exploratory.
+    """
+
+    name: str = "optimal_transport_matching"
+    # 10M float distances are large but bounded; callers can lower this guard
+    # for tighter production memory budgets.
+    max_cost_matrix_entries: int = 10_000_000
+    caliper: float | None = None
+    max_control_reuse: int | None = None
+    estimand: str = "att"
+
+    def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
+        if self.estimand not in {"att", "ate"}:
+            raise ValueError("OptimalTransportMatchingEstimator estimand must be 'att' or 'ate'.")
+        if self.estimand == "ate":
+            treated = self.__class__(
+                name=self.name,
+                max_cost_matrix_entries=self.max_cost_matrix_entries,
+                caliper=self.caliper,
+                max_control_reuse=self.max_control_reuse,
+                estimand="att",
+            ).estimate(data, spec)
+            reversed_spec = replace(spec, control_value=spec.treatment_value, treatment_value=spec.control_value)
+            control = self.__class__(
+                name=self.name,
+                max_cost_matrix_entries=self.max_cost_matrix_entries,
+                caliper=self.caliper,
+                max_control_reuse=self.max_control_reuse,
+                estimand="att",
+            ).estimate(data, reversed_spec)
+            n_total = treated.n_treatment + treated.n_control
+            weight_t = treated.n_treatment / n_total
+            weight_c = treated.n_control / n_total
+            effect = weight_t * treated.effect + weight_c * control.effect
+            se = math.sqrt((weight_t * treated.standard_error) ** 2 + (weight_c * control.standard_error) ** 2)
+            return EstimateResult(
+                estimator=self.name,
+                effect=effect,
+                standard_error=se,
+                statistic=safe_divide(effect, se),
+                p_value=t_two_sided_p(safe_divide(effect, se), max(n_total - 2, 1)),
+                ci_low=effect - t_critical(spec.alpha, max(n_total - 2, 1)) * se,
+                ci_high=effect + t_critical(spec.alpha, max(n_total - 2, 1)) * se,
+                n_control=treated.n_control,
+                n_treatment=treated.n_treatment,
+                diagnostics={
+                    "estimand": "ATE",
+                    "matching_mode": "symmetric_transport_imputation",
+                    "att_effect": treated.effect,
+                    "atc_effect": control.effect,
+                    "att_standard_error": treated.standard_error,
+                    "atc_standard_error": control.standard_error,
+                },
+            )
+        features = tuple(spec.pre_treatment_features())
+        require_columns(data, [spec.treatment_col, spec.target_col, *features])
+        if not features:
+            raise ValueError("Optimal-transport matching requires numeric covariates.")
+        y = _float_column(data, spec.target_col)
+        treatment = np.asarray(data[spec.treatment_col])
+        x = _feature_matrix(data, features)
+        valid = np.isfinite(y) & np.isfinite(x).all(axis=1)
+        control_mask = valid & (treatment == spec.control_value)
+        treatment_mask = valid & (treatment == spec.treatment_value)
+        n_control = int(control_mask.sum())
+        n_treatment = int(treatment_mask.sum())
+        if n_treatment < 2 or n_control < 2:
+            raise ValueError("Both groups need at least two observations.")
+        minimum_capacity = int(math.ceil(n_treatment / n_control))
+        capacity = minimum_capacity if self.max_control_reuse is None else int(
+            self.max_control_reuse
+        )
+        if capacity < minimum_capacity:
+            raise ValueError(
+                "max_control_reuse is too small to match every treated unit."
+            )
+        matrix_entries = n_treatment * n_control * capacity
+        if matrix_entries > self.max_cost_matrix_entries:
+            raise ValueError(
+                "Optimal-transport cost matrix would contain "
+                f"{matrix_entries:,} entries; limit is "
+                f"{self.max_cost_matrix_entries:,}."
+            )
+
+        x_control = x[control_mask]
+        x_treatment = x[treatment_mask]
+        pooled = np.vstack([x_control, x_treatment])
+        center = pooled.mean(axis=0)
+        scale = pooled.std(axis=0, ddof=0)
+        scale = np.where(scale > 0.0, scale, 1.0)
+        x_control = (x_control - center) / scale
+        x_treatment = (x_treatment - center) / scale
+        try:
+            from scipy.optimize import linear_sum_assignment
+            from scipy.spatial.distance import cdist
+        except Exception as exc:  # pragma: no cover - SciPy is a core dependency
+            raise RuntimeError(f"SciPy matching solver is unavailable: {exc}") from exc
+
+        base_cost = cdist(x_treatment, x_control, metric="sqeuclidean")
+        cost = np.repeat(base_cost, capacity, axis=1)
+        treated_index, control_slot = linear_sum_assignment(cost)
+        control_index = control_slot // capacity
+        matched_cost = base_cost[treated_index, control_index]
+        if self.caliper is not None:
+            if self.caliper <= 0.0:
+                raise ValueError("caliper must be positive.")
+            keep = np.sqrt(matched_cost) <= self.caliper
+            treated_index = treated_index[keep]
+            control_index = control_index[keep]
+            matched_cost = matched_cost[keep]
+        if treated_index.size < 2:
+            raise ValueError("Fewer than two pairs remain after optimal matching.")
+
+        y_control = y[control_mask]
+        y_treatment = y[treatment_mask]
+        differences = y_treatment[treated_index] - y_control[control_index]
+        effect = float(differences.mean())
+        se = float(differences.std(ddof=1) / math.sqrt(differences.size))
+        return _build_result(
+            self.name,
+            effect,
+            se,
+            float(max(differences.size - 1, 1)),
+            n_control,
+            n_treatment,
+            spec.alpha,
+            {
+                "estimand": "ATT" if self.caliper is None else "overlap_ATT",
+                "solver": "scipy_linear_sum_assignment",
+                "transport": "exact_unregularized_capacitated_monge_assignment",
+                "treated_mass": "uniform",
+                "regularization": "none",
+                "control_reuse_capacity": capacity,
+                "minimum_required_capacity": minimum_capacity,
+                "unique_controls": int(np.unique(control_index).size),
+                "distance": "pooled_standardized_squared_euclidean",
+                "features": ",".join(features),
+                "matched_pairs": int(differences.size),
+                "total_transport_cost": float(matched_cost.sum()),
+                "mean_match_distance": float(np.sqrt(matched_cost).mean()),
+                "max_match_distance": float(np.sqrt(matched_cost).max()),
+                "cost_matrix_entries": matrix_entries,
+                "inference": "paired_t_conditional_on_matching",
+            },
+        )
+
+
+@dataclass
 class WaldEstimator:
     name: str = "wald_late"
 
@@ -1449,7 +2168,7 @@ class WaldEstimator:
         se = math.sqrt(max(variance, 0.0))
         statistic = safe_divide(effect, se)
         p_value = normal_two_sided_p(statistic)
-        crit = 1.959963984540054 if abs(spec.alpha - 0.05) < 1e-12 else 1.959963984540054
+        crit = normal_critical(spec.alpha)
         return EstimateResult(
             estimator=self.name,
             effect=effect,

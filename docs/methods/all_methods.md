@@ -134,3 +134,47 @@ GA обучается на pre-experiment target доступного датас
 
 Эти строки генерируются функциями из `varwar.pipelines`, а их точный состав
 сохраняется вместе с каждым запуском гонки.
+## Дополнительные записи текущего каталога
+
+| ID | Категория | Название | Статус |
+| --- | --- | --- | --- |
+| `population_weighted_stratified` | PopulationGeneralizationEstimator | Стратифицированная оценка с известными долями целевой популяции | реализован |
+| `hypex_matching` | Estimator | HypEx Matching с извлечением сырой таблицы MatchingAnalyzer | интеграция |
+| `isolation_forest_trimming` | TargetTransformer | Treatment-blind отсечка аномалий Isolation Forest | реализован, изменённая метрика |
+| `isolation_forest_winsorization` | TargetTransformer | Treatment-blind ограничение аномалий Isolation Forest | реализован, изменённая метрика |
+| `panel_prior_cupac_A` | TargetTransformer | CUPAC A с prior из статистик исторической панели | реализован |
+| `panel_prior_cupac_A_plus_B` | TargetTransformer | Panel-prior CUPAC A с отдельной стадией B | реализован |
+| `panel_prior_cupac_A_plus_B_plus_C` | TargetTransformer | Panel-prior CUPAC A, B и balance-gated C | реализован |
+| `panel_prior_cupac_A__hypex_ab` | CompositePipeline | Panel-prior CUPAC A -> HypEx Welch | интеграция |
+| `panel_prior_cupac_A_plus_B__hypex_ab` | CompositePipeline | Panel-prior CUPAC A+B -> HypEx Welch | интеграция |
+| `panel_prior_cupac_A_plus_B_plus_C__hypex_ab` | CompositePipeline | Panel-prior CUPAC A+B+C -> HypEx Welch | интеграция |
+
+## Актуальная матрица активной RCT-гонки
+
+Следующие записи имеют исполняемый маршрут в текущей синтетической гонке.
+Статус `реализован` означает наличие кода и unit/smoke-проверок; он не означает
+автоматически production-ready статистическую гарантию.
+
+| Группа | Пайплайны | `experiment_only` | `panel_prior` | Временной режим |
+| --- | --- | --- | --- | --- |
+| Базовые оценки | `welch`, `hypex_ab`, `pooled_mean_diff`, `randomized_weighted_mean_diff` | да | да, без использования prior | pre-only |
+| Рандомизационный вывод | `permutation_mean_diff`, `bootstrap_mean_diff` | да | да, без использования prior | pre-only |
+| Коррекция target | `hypex_cuped`, `cuped_control__hypex_ab`, `hypex_cupac_temporal`, `cupac_linear_A__hypex_ab` | да | да, без использования prior | pre-only |
+| In-time-коррекция | `cupac_linear_A_plus_B__hypex_ab`, `cupac_linear_A_plus_B_plus_C__hypex_ab` | да | да, без использования prior | post-allowed |
+| Регрессия и matching | `regression_adjustment`, `ml_rate`, `nearest_neighbor_matching`, `hypex_matching`, `optimal_transport_matching` | да | да, без использования prior | pre-only |
+| Panel-prior CUPAC | `panel_prior_cupac_A__hypex_ab` | нет | да | pre-only |
+| Panel-prior CUPAC + in-time | `panel_prior_cupac_A_plus_B__hypex_ab`, `panel_prior_cupac_A_plus_B_plus_C__hypex_ab` | нет | да | post-allowed |
+| Стратификация | `ga_strata__*__stratified` | да | да, без использования prior | по компонентам |
+| Population generalization | `population_weighted_stratified`, `calibration_reweighting` | нет | только сценарий с заданными population totals | pre-only |
+
+В отчёте `race_information_mode` показывает фактически выбранный режим
+гонки, а `information_mode` в каталоге показывает минимальный контракт
+пайплайна. Поэтому обычный Welch может появиться и в строке `panel_prior`:
+он не использует prior, но участвует в честной паре сравнений с методами,
+которым prior разрешён.
+
+Декартова расширенная гонка формирует дополнительные IDs вида
+`cartesian__<estimator>__<transformer>`. Это конфигурационно порождённые
+композиции, а не новые фундаментальные методы; полный список конкретного
+запуска хранится в `pipeline_catalog.csv` и на листе `Пайплайны` итогового
+Excel-файла.

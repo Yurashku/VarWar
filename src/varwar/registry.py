@@ -4,14 +4,17 @@ from varwar.core import ExperimentSpec, WrappedEstimator
 from varwar.estimators import (
     ApproxKSTestEstimator,
     BootstrapMeanDiffEstimator,
+    CalibrationWeightedATEEstimator,
     DifferenceInMeansEstimator,
     EnergyDistanceTestEstimator,
     HypExABTestEstimator,
     HypExCupacEstimator,
     HypExCupedEstimator,
+    HypExMatchingEstimator,
     KSTestEstimator,
     MLRateEstimator,
     NearestNeighborMatchingEstimator,
+    OptimalTransportMatchingEstimator,
     PlaceholderEstimator,
     PermutationMeanTestEstimator,
     PermutationMeanDiffEstimator,
@@ -19,6 +22,7 @@ from varwar.estimators import (
     RatioDeltaMethodEstimator,
     RegressionAdjustmentEstimator,
     RandomizedWeightedMeanDiffEstimator,
+    PopulationWeightedStratifiedEstimator,
     StratifiedDifferenceInMeansEstimator,
     TrimmedMeanEstimator,
     VarianceWeightedStratifiedEstimator,
@@ -47,22 +51,8 @@ def placeholder_estimators() -> list[PlaceholderEstimator]:
             "permutation-calibrated null distribution",
         ),
         PlaceholderEstimator(
-            "hypex_matcher",
-            "overlaps the local ATT matcher until estimand, distance, "
-            "replacement, and parity rules are fixed",
-        ),
-        PlaceholderEstimator(
-            "calibration_reweighting",
-            "requires external population totals, calibration constraints, "
-            "target population, and variance policy",
-        ),
-        PlaceholderEstimator(
             "optimal_transport_check",
             "excluded because no unique statistic or decision rule is defined",
-        ),
-        PlaceholderEstimator(
-            "optimal_transport_matching",
-            "needs matching distance, regularization, and inference policy",
         ),
         PlaceholderEstimator(
             "optimal_transport_homogeneity_test",
@@ -180,6 +170,8 @@ def default_estimators(
             RegressionAdjustmentEstimator(),
             MLRateEstimator(),
             NearestNeighborMatchingEstimator(),
+            HypExMatchingEstimator(),
+            OptimalTransportMatchingEstimator(),
             TrimmedMeanEstimator(),
             WinsorizedMeanEstimator(),
         ]

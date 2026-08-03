@@ -13,18 +13,30 @@ import pandas as pd
 
 from varwar.benchmark import run_estimator_race
 from varwar.core import ExperimentSpec
+from varwar.estimators import (
+    CalibrationWeightedATEEstimator,
+    PopulationWeightedStratifiedEstimator,
+    StratifiedDifferenceInMeansEstimator,
+)
 from varwar.pipelines import (
     PipelineCandidate,
     PipelineDefinition,
     PipelineTier,
+    build_cartesian_rct_pipelines,
     build_full_traffic_pipelines,
+    build_panel_prior_pipelines,
     build_stratified_pipelines,
 )
+from varwar.panel_prior import PanelPriorSummary
 from varwar.stratification import (
     ABProportionalVarianceObjective,
     GeneticStrataReducer,
 )
-from varwar.synthetic import SyntheticConfig, generate_synthetic_ab
+from varwar.synthetic import (
+    SyntheticConfig,
+    generate_synthetic_ab,
+    generate_synthetic_panel,
+)
 
 
 @dataclass(frozen=True)
@@ -33,9 +45,13 @@ class SyntheticScenario:
     name_ru: str
     outcome_model: str = "linear"
     heavy_tail: bool = False
+    noise_distribution: str | None = None
     effect_heterogeneity: float = 0.0
     expert_safe_treatment_shift: float = 0.0
     gated_treatment_shift: float = 0.0
+    population_stratum_weights: tuple[float, float, float] | None = None
+    experiment_stratum_weights: tuple[float, float, float] | None = None
+    stratum_effect_offsets: tuple[float, float, float] = (0.0, 0.0, 0.0)
     purpose_ru: str = ""
 
 
@@ -70,6 +86,29 @@ SCENARIOS: dict[str, SyntheticScenario] = {
         expert_safe_treatment_shift=0.30,
         purpose_ru="Отрицательный контроль: экспертная ошибка должна проявиться смещением.",
     ),
+    "linear_skewed": SyntheticScenario(
+        "linear_skewed",
+        "Линейный сигнал, асимметричный логнормальный шум",
+        noise_distribution="centered_lognormal",
+        purpose_ru="Проверка асимметричных распределений и bootstrap inference.",
+    ),
+    "linear_contaminated": SyntheticScenario(
+        "linear_contaminated",
+        "Линейный сигнал, редкие сильные выбросы",
+        noise_distribution="contaminated_normal",
+        purpose_ru="Проверка робастных преобразований и устойчивости интервалов.",
+    ),
+    "population_shifted_strata": SyntheticScenario(
+        "population_shifted_strata",
+        "Нерепрезентативная выборка и известная целевая популяция",
+        population_stratum_weights=(0.60, 0.30, 0.10),
+        experiment_stratum_weights=(0.20, 0.40, 0.40),
+        stratum_effect_offsets=(-0.10, 0.0, 0.60),
+        purpose_ru=(
+            "Отдельная честная гонка методов, использующих известные доли страт "
+            "и population moments."
+        ),
+    ),
 }
 
 
@@ -89,6 +128,7 @@ class SyntheticPipelineRaceConfig:
         "nonlinear_gaussian",
         "contaminated_c",
         "misclassified_b",
+        "population_shifted_strata",
     )
     category_cols: tuple[str, ...] = ("region", "device", "activity_band")
     n_strata: int = 6
@@ -103,6 +143,10 @@ class SyntheticPipelineRaceConfig:
     include_stratified: bool = True
     heavy_tail: bool | None = None
     pipeline_ids: tuple[str, ...] | None = None
+    information_mode: str = "both"
+    panel_prior_months: int = 6
+    include_non_rct_specialized: bool = False
+    include_cartesian: bool = False
 
     def __post_init__(self) -> None:
         if self.n_trials < 1:
@@ -113,6 +157,12 @@ class SyntheticPipelineRaceConfig:
             raise ValueError("n_strata must be in [1, n].")
         if not 0.0 < self.alpha < 1.0:
             raise ValueError("alpha must be between zero and one.")
+        if self.information_mode not in {"experiment_only", "panel_prior", "both"}:
+            raise ValueError(
+                "information_mode must be 'experiment_only', 'panel_prior', or 'both'."
+            )
+        if self.panel_prior_months < 2:
+            raise ValueError("panel_prior_months must be at least two.")
         unknown = set(self.scenario_ids).difference(SCENARIOS)
         if unknown:
             raise ValueError(f"Unknown scenario IDs: {sorted(unknown)}")
@@ -158,14 +208,45 @@ def pipeline_definitions(
             prefer_pypi_hypex=config.prefer_pypi_hypex,
         )
     ]
-    if not config.include_stratified:
-        definitions = full
-    else:
+    stratified = []
+    if config.include_stratified:
         stratified = [
             candidate.definition
-            for candidate in build_stratified_pipelines(spec, {"example": 1.0})
+            for candidate in build_stratified_pipelines(spec)
         ]
-        definitions = full + stratified
+    if config.information_mode in {"panel_prior", "both"}:
+        full.extend(
+            candidate.definition
+            for candidate in build_panel_prior_pipelines(
+                spec,
+                summary=None,
+                prefer_pypi_hypex=config.prefer_pypi_hypex,
+            )
+        )
+    definitions = full + stratified
+    if config.include_cartesian:
+        definitions.extend(
+            candidate.definition
+            for candidate in build_cartesian_rct_pipelines(
+                spec,
+                prefer_pypi_hypex=config.prefer_pypi_hypex,
+                include_panel_prior=config.information_mode in {"panel_prior", "both"},
+            )
+        )
+    if "population_shifted_strata" in config.scenario_ids and config.information_mode in {"panel_prior", "both"}:
+        definitions += [
+            candidate.definition
+            for candidate in _population_information_candidates(
+                SCENARIOS["population_shifted_strata"]
+            )
+        ]
+    if not config.include_non_rct_specialized:
+        definitions = [
+            definition
+            for definition in definitions
+            if definition.tier != PipelineTier.CHANGED_METRIC
+            and definition.pipeline_id != "variance_weighted_stratified"
+        ]
     if config.pipeline_ids is None:
         return definitions
     requested = set(config.pipeline_ids)
@@ -182,6 +263,66 @@ def pipeline_definitions(
     return selected
 
 
+def _population_information_candidates(
+    scenario: SyntheticScenario,
+) -> list[PipelineCandidate]:
+    weights_tuple = scenario.population_stratum_weights
+    if weights_tuple is None:
+        return []
+    labels = ("low", "mid", "high")
+    weights = dict(zip(labels, weights_tuple))
+    population_score_mean = -weights_tuple[0] + weights_tuple[2]
+    return [
+        PipelineCandidate(
+            PipelineDefinition(
+                "stratified_mean_diff",
+                "Стратификация с долями экспериментальной выборки",
+                ("stratified_mean_diff",),
+                "Sample ATE",
+                PipelineTier.CONFIRMATORY,
+                "Только A/B-датасет и population_stratum.",
+                "Не использует известный состав целевой популяции.",
+                "welch",
+                estimand_id="sample_ate",
+                information_mode="experiment_only",
+            ),
+            StratifiedDifferenceInMeansEstimator(),
+        ),
+        PipelineCandidate(
+            PipelineDefinition(
+                "population_weighted_stratified",
+                "Постстратификация по известной популяции",
+                ("population_weighted_stratified",),
+                "Population ATE",
+                PipelineTier.CONFIRMATORY,
+                "A/B-датасет и внешние доли population_stratum.",
+                "Участвует только в population-information race.",
+                "stratified_mean_diff",
+                estimand_id="population_ate",
+                information_mode="panel_prior",
+            ),
+            PopulationWeightedStratifiedEstimator(population_weights=weights),
+        ),
+        PipelineCandidate(
+            PipelineDefinition(
+                "calibration_reweighting",
+                "Entropy calibration по известным population moments",
+                ("calibration_reweighting",),
+                "Population ATE",
+                PipelineTier.CONFIRMATORY,
+                "A/B-датасет и внешний средний population_score.",
+                "Каждая группа отдельно калибруется к целевой популяции.",
+                "stratified_mean_diff",
+                estimand_id="population_ate",
+                information_mode="panel_prior",
+            ),
+            CalibrationWeightedATEEstimator(
+                population_moments={"population_score": population_score_mean}
+            ),
+        ),
+    ]
+
+
 def _experiment_pair(
     config: SyntheticPipelineRaceConfig,
     scenario: SyntheticScenario,
@@ -195,10 +336,12 @@ def _experiment_pair(
             noise_scale=config.noise_scale,
             seed=seed,
             heavy_tail=scenario.heavy_tail,
+            noise_distribution=scenario.noise_distribution,
             outcome_model=scenario.outcome_model,
             effect_heterogeneity=0.0,
             expert_safe_treatment_shift=scenario.expert_safe_treatment_shift,
             gated_treatment_shift=scenario.gated_treatment_shift,
+            experiment_stratum_weights=scenario.experiment_stratum_weights,
         )
     )
     alternative = null.copy()
@@ -208,6 +351,14 @@ def _experiment_pair(
         config.alternative_effect
         + scenario.effect_heterogeneity * centered_pre
     )
+    if scenario.experiment_stratum_weights is not None:
+        offsets = dict(
+            zip(("low", "mid", "high"), scenario.stratum_effect_offsets)
+        )
+        individual_effect = individual_effect + np.asarray(
+            alternative["population_stratum"].astype(object).map(offsets),
+            dtype=float,
+        )
     alternative["individual_effect"] = individual_effect
     alternative["y"] = (
         np.asarray(alternative["y0"], dtype=float)
@@ -216,12 +367,52 @@ def _experiment_pair(
     return null, alternative
 
 
+def _panel_prior_summary(
+    config: SyntheticPipelineRaceConfig,
+    scenario: SyntheticScenario,
+    seed: int,
+) -> PanelPriorSummary:
+    """Build the SQL-like historical aggregate used by panel-prior pipelines."""
+
+    panel = generate_synthetic_panel(
+        SyntheticConfig(
+            n=max(config.n // 2, 200),
+            effect=0.0,
+            covariate_signal=config.covariate_signal,
+            noise_scale=config.noise_scale,
+            seed=seed + 700_000,
+            heavy_tail=scenario.heavy_tail,
+            noise_distribution=scenario.noise_distribution,
+            outcome_model=scenario.outcome_model,
+            experiment_stratum_weights=scenario.experiment_stratum_weights,
+        ),
+        n_months=config.panel_prior_months,
+        start_date="2023-01-01",
+    )
+    training_features = ("y_pre__lag2", "x1__lag2", "x2__lag2")
+    return PanelPriorSummary.from_frame(
+        panel,
+        feature_cols=training_features,
+        target_col="y_pre",
+        date_col="report_date",
+        cutoff="2024-01-01",
+        entity_col="entity_id",
+        category_cols=("region", "device", "activity_band"),
+        stratum_col="population_stratum" if "population_stratum" in panel.columns else None,
+        metadata={
+            "source": "synthetic_monthly_panel",
+            "scenario": scenario.scenario_id,
+            "cutoff_rule": "report_date < experiment_start",
+        },
+    )
+
+
 def _fit_reducer(
     data: pd.DataFrame,
     config: SyntheticPipelineRaceConfig,
     random_state: int,
     measure_memory: bool,
-) -> tuple[GeneticStrataReducer, dict[Any, float], float, int | None]:
+) -> tuple[GeneticStrataReducer, float, int | None]:
     reducer = GeneticStrataReducer(
         category_cols=config.category_cols,
         reference_target_col="y_pre",
@@ -243,13 +434,6 @@ def _fit_reducer(
         tracemalloc.start()
     try:
         reducer.fit(data)
-        prepared = reducer.augment(data)
-        counts = prepared[reducer.output_col].value_counts(
-            sort=False,
-            dropna=False,
-        )
-        total = float(counts.sum())
-        weights = {key: float(value / total) for key, value in counts.items()}
     finally:
         if measure_memory:
             _, peak_memory_bytes = tracemalloc.get_traced_memory()
@@ -257,7 +441,7 @@ def _fit_reducer(
         else:
             peak_memory_bytes = None
     runtime_ms = (time.perf_counter() - start) * 1_000.0
-    return reducer, weights, runtime_ms, peak_memory_bytes
+    return reducer, runtime_ms, peak_memory_bytes
 
 
 def _evaluate_candidates(
@@ -274,6 +458,8 @@ def _evaluate_candidates(
     preprocessor: str = "none",
     preprocessing_runtime_ms: float = 0.0,
     preprocessing_peak_memory_bytes: int | None = None,
+    auxiliary_data: Any | None = None,
+    race_information_mode: str = "experiment_only",
 ) -> pd.DataFrame:
     rows: list[pd.DataFrame] = []
     for candidate in candidates:
@@ -281,7 +467,7 @@ def _evaluate_candidates(
             data,
             spec,
             estimators=[candidate.estimator],
-            auxiliary_data=None,
+            auxiliary_data=auxiliary_data,
             measure_memory=measure_memory,
         )
         for key, value in candidate.definition.to_record().items():
@@ -294,6 +480,7 @@ def _evaluate_candidates(
         frame["trial"] = int(trial)
         frame["seed"] = int(seed)
         frame["preprocessor"] = preprocessor
+        frame["race_information_mode"] = race_information_mode
         frame["preprocessing_runtime_ms"] = float(preprocessing_runtime_ms)
         frame["end_to_end_runtime_ms"] = (
             pd.to_numeric(frame["runtime_ms"], errors="coerce")
@@ -345,88 +532,166 @@ def run_synthetic_pipeline_race(
     )
     stratified_ids = {
         candidate.definition.pipeline_id
-        for candidate in build_stratified_pipelines(spec, {"example": 1.0})
+        for candidate in build_stratified_pipelines(spec)
     }
     run_stratified = config.include_stratified and (
         selected_ids is None or bool(selected_ids.intersection(stratified_ids))
     )
     rows: list[pd.DataFrame] = []
-    total = config.n_trials * len(scenarios)
+    information_modes = (
+        ("experiment_only", "panel_prior")
+        if config.information_mode == "both"
+        else (config.information_mode,)
+    )
+    total = config.n_trials * len(scenarios) * len(information_modes)
     completed = 0
 
     for scenario_index, scenario in enumerate(scenarios):
         for trial in range(config.n_trials):
             seed = config.seed + scenario_index * 1_000_000 + trial
             null, alternative = _experiment_pair(config, scenario, seed)
-            if run_stratified:
-                reducer, weights, ga_runtime, ga_peak = _fit_reducer(
-                    null,
-                    config,
-                    random_state=seed + 100_000,
-                    measure_memory=measure_memory,
+            population_true_effect = config.alternative_effect
+            if scenario.population_stratum_weights is not None:
+                population_true_effect += float(
+                    np.dot(
+                        scenario.population_stratum_weights,
+                        scenario.stratum_effect_offsets,
+                    )
                 )
-            for hypothesis, true_effect, experiment in (
-                ("H0", 0.0, null),
-                ("H1", config.alternative_effect, alternative),
-            ):
-                full_candidates = build_full_traffic_pipelines(
-                    spec,
-                    prefer_pypi_hypex=config.prefer_pypi_hypex,
+            for race_information_mode in information_modes:
+                panel_summary = (
+                    _panel_prior_summary(config, scenario, seed)
+                    if race_information_mode == "panel_prior"
+                    else None
                 )
+                full_candidates = [
+                    candidate
+                    for candidate in build_full_traffic_pipelines(
+                        spec,
+                        prefer_pypi_hypex=config.prefer_pypi_hypex,
+                        include_specialized=False,
+                    )
+                    if candidate.definition.tier != PipelineTier.CHANGED_METRIC
+                ]
+                if panel_summary is not None:
+                    full_candidates.extend(
+                        build_panel_prior_pipelines(
+                            spec,
+                            panel_summary,
+                            prefer_pypi_hypex=config.prefer_pypi_hypex,
+                        )
+                    )
+                if config.include_cartesian:
+                    full_candidates.extend(
+                        candidate
+                        for candidate in build_cartesian_rct_pipelines(
+                            spec,
+                            prefer_pypi_hypex=config.prefer_pypi_hypex,
+                            include_panel_prior=panel_summary is not None,
+                            panel_summary=panel_summary,
+                        )
+                        if candidate.definition.information_mode == "experiment_only"
+                        or race_information_mode == "panel_prior"
+                    )
                 if selected_ids is not None:
                     full_candidates = [
                         candidate
                         for candidate in full_candidates
                         if candidate.definition.pipeline_id in selected_ids
                     ]
-                if full_candidates:
-                    rows.append(
-                        _evaluate_candidates(
-                            experiment,
-                            spec,
-                            full_candidates,
-                            scenario=scenario,
-                            hypothesis=hypothesis,
-                            true_effect=true_effect,
-                            trial=trial,
-                            seed=seed,
-                            measure_memory=measure_memory,
-                        )
-                    )
+                reducer = None
+                ga_runtime = 0.0
+                ga_peak = None
                 if run_stratified:
-                    prepared = reducer.augment(experiment)
-                    stratified_candidates = build_stratified_pipelines(
-                        spec,
-                        weights,
-                        prefer_pypi_hypex=config.prefer_pypi_hypex,
+                    reducer, ga_runtime, ga_peak = _fit_reducer(
+                        null,
+                        config,
+                        random_state=seed + 100_000,
+                        measure_memory=measure_memory,
                     )
-                    if selected_ids is not None:
+                for hypothesis, true_effect, experiment in (
+                    ("H0", 0.0, null),
+                    ("H1", population_true_effect, alternative),
+                ):
+                    if full_candidates:
+                        rows.append(
+                            _evaluate_candidates(
+                                experiment,
+                                spec,
+                                full_candidates,
+                                scenario=scenario,
+                                hypothesis=hypothesis,
+                                true_effect=true_effect,
+                                trial=trial,
+                                seed=seed,
+                                measure_memory=measure_memory,
+                                auxiliary_data=panel_summary,
+                                race_information_mode=race_information_mode,
+                            )
+                        )
+                    if run_stratified and reducer is not None:
+                        prepared = reducer.augment(experiment)
                         stratified_candidates = [
                             candidate
-                            for candidate in stratified_candidates
-                            if candidate.definition.pipeline_id in selected_ids
+                            for candidate in build_stratified_pipelines(
+                                spec,
+                                prefer_pypi_hypex=config.prefer_pypi_hypex,
+                            )
+                            if candidate.definition.pipeline_id != "variance_weighted_stratified"
                         ]
-                    if not stratified_candidates:
-                        continue
-                    rows.append(
-                        _evaluate_candidates(
-                            prepared,
-                            spec.with_stratum(reducer.output_col),
-                            stratified_candidates,
-                            scenario=scenario,
-                            hypothesis=hypothesis,
-                            true_effect=true_effect,
-                            trial=trial,
-                            seed=seed,
-                            measure_memory=measure_memory,
-                            preprocessor="genetic_strata_reducer",
-                            preprocessing_runtime_ms=ga_runtime,
-                            preprocessing_peak_memory_bytes=ga_peak,
-                        )
-                    )
-            completed += 1
-            if progress is not None:
-                progress(completed, total)
+                        if selected_ids is not None:
+                            stratified_candidates = [
+                                candidate
+                                for candidate in stratified_candidates
+                                if candidate.definition.pipeline_id in selected_ids
+                            ]
+                        if stratified_candidates:
+                            rows.append(
+                                _evaluate_candidates(
+                                    prepared,
+                                    spec.with_stratum(reducer.output_col),
+                                    stratified_candidates,
+                                    scenario=scenario,
+                                    hypothesis=hypothesis,
+                                    true_effect=true_effect,
+                                    trial=trial,
+                                    seed=seed,
+                                    measure_memory=measure_memory,
+                                    preprocessor="genetic_strata_reducer",
+                                    preprocessing_runtime_ms=ga_runtime,
+                                    preprocessing_peak_memory_bytes=ga_peak,
+                                    auxiliary_data=panel_summary,
+                                    race_information_mode=race_information_mode,
+                                )
+                            )
+                    if race_information_mode == "panel_prior":
+                        population_candidates = _population_information_candidates(scenario)
+                        if selected_ids is not None:
+                            population_candidates = [
+                                candidate
+                                for candidate in population_candidates
+                                if candidate.definition.pipeline_id in selected_ids
+                            ]
+                        if population_candidates:
+                            rows.append(
+                                _evaluate_candidates(
+                                    experiment,
+                                    spec.with_stratum("population_stratum"),
+                                    population_candidates,
+                                    scenario=scenario,
+                                    hypothesis=hypothesis,
+                                    true_effect=true_effect,
+                                    trial=trial,
+                                    seed=seed,
+                                    measure_memory=measure_memory,
+                                    preprocessor="known_population_information",
+                                    auxiliary_data=panel_summary,
+                                    race_information_mode=race_information_mode,
+                                )
+                            )
+                completed += 1
+                if progress is not None:
+                    progress(completed, total)
     if not rows:
         raise ValueError("No pipelines were selected for the synthetic race.")
     return pd.concat(rows, ignore_index=True, sort=False)
@@ -607,6 +872,7 @@ def summarize_synthetic_pipeline_race(
     min_coverage: float = 0.92,
     min_se_ratio: float = 0.80,
     max_se_ratio: float = 1.20,
+    min_trials_for_scientific_ranking: int = 100,
 ) -> pd.DataFrame:
     """Свести paired H0/H1 прогоны и применить практические R&D-допуски.
 
@@ -635,13 +901,33 @@ def summarize_synthetic_pipeline_race(
         "data_contract",
         "pipeline_notes",
         "predecessor_pipeline",
+        "design_mode",
+        "information_mode",
+        "estimand_id",
+        "temporal_mode",
+        "race_information_mode",
+    ]
+    grouping_columns = ["data_scenario", "pipeline"] + [
+        column
+        for column in (
+            "race_information_mode",
+            "information_mode",
+            "temporal_mode",
+            "estimand_id",
+        )
+        if column in trials.columns
     ]
     rows: list[dict[str, Any]] = []
-    for (scenario_id, pipeline_id), frame in trials.groupby(
-        ["data_scenario", "pipeline"],
+    for group_key, frame in trials.groupby(
+        grouping_columns,
         sort=False,
         dropna=False,
     ):
+        if not isinstance(group_key, tuple):
+            group_key = (group_key,)
+        group_values = dict(zip(grouping_columns, group_key))
+        scenario_id = group_values["data_scenario"]
+        pipeline_id = group_values["pipeline"]
         null = frame.loc[frame["hypothesis"] == "H0"]
         alternative = frame.loc[frame["hypothesis"] == "H1"]
         if null.empty or alternative.empty:
@@ -734,15 +1020,37 @@ def summarize_synthetic_pipeline_race(
             ),
         }
         record.update({column: first.get(column) for column in metadata_columns})
+        record.update(group_values)
         rows.append(record)
 
     summary = pd.DataFrame(rows)
     if summary.empty:
         return summary
+    # Historical fixtures and old result files did not carry the explicit
+    # estimand_id column. Infer only the narrow sample-ATE fallback so those
+    # files retain their diagnostic meaning; current runs always provide the
+    # field from PipelineDefinition.
+    if "estimand_id" in summary.columns:
+        missing_estimand = summary["estimand_id"].isna()
+        inferred = summary["estimand"].astype(str).str.contains(
+            r"\bATE\b", regex=True
+        )
+        summary.loc[missing_estimand & inferred, "estimand_id"] = "sample_ate"
+        summary.loc[missing_estimand & ~inferred, "estimand_id"] = "unknown"
     summary["variance_reduction_vs_welch"] = math.nan
     summary["variance_reduction_vs_cupac_a"] = math.nan
     summary["incremental_variance_reduction"] = math.nan
-    for _, indices in summary.groupby("data_scenario", sort=False).groups.items():
+    efficiency_grouping = ["data_scenario"] + [
+        column
+        for column in (
+            "race_information_mode",
+            "information_mode",
+            "temporal_mode",
+            "estimand_id",
+        )
+        if column in summary.columns
+    ]
+    for _, indices in summary.groupby(efficiency_grouping, sort=False, dropna=False).groups.items():
         block = summary.loc[indices]
         _fill_relative_efficiency(
             summary,
@@ -799,7 +1107,11 @@ def summarize_synthetic_pipeline_race(
         ],
     ] = False
 
-    comparable = summary["estimand"].astype(str).str.startswith("ATE")
+    comparable = (
+        summary["estimand_id"].astype(str).eq("sample_ate")
+        if "estimand_id" in summary.columns
+        else summary["estimand"].astype(str).str.contains(r"\bATE\b", regex=True)
+    )
     comparable &= ~changed_metric
     summary["passes_diagnostic_screen"] = (
         comparable
@@ -808,6 +1120,13 @@ def summarize_synthetic_pipeline_race(
         & summary["coverage_within_tolerance"]
         & summary["se_ratio_within_tolerance"]
         & (summary["success_rate"] == 1.0)
+    )
+    summary["scientific_sample_size_ok"] = (
+        summary["n_trials"] >= int(min_trials_for_scientific_ranking)
+    )
+    summary["ranking_eligible"] = (
+        summary["passes_diagnostic_screen"]
+        & summary["scientific_sample_size_ok"]
     )
     summary["diagnostic_status"] = np.select(
         [
@@ -915,6 +1234,23 @@ def format_pipeline_summary_ru(summary: pd.DataFrame) -> pd.DataFrame:
                 "peak_python_memory_mib",
                 pd.Series(float("nan"), index=summary.index),
             ).round(2),
+            "Режим информации гонки": summary.get(
+                "race_information_mode",
+                pd.Series("experiment_only", index=summary.index),
+            ),
+            "Временной доступ": summary.get(
+                "temporal_mode",
+                pd.Series("pre_treatment_only", index=summary.index),
+            ),
+            "Идентификатор estimand": summary.get("estimand_id", summary["estimand"]),
+            "Достаточно повторений для рейтинга": summary.get(
+                "scientific_sample_size_ok",
+                pd.Series(False, index=summary.index),
+            ),
+            "Допущен в научный рейтинг": summary.get(
+                "ranking_eligible",
+                pd.Series(False, index=summary.index),
+            ),
             "Backend": summary["backend"].replace(
                 {
                     "pypi_hypex": "PyPI HypEx",

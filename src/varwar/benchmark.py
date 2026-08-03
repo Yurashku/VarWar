@@ -30,7 +30,7 @@ def _estimate_one(
     estimator: Any,
     data: pd.DataFrame,
     spec: ExperimentSpec,
-    auxiliary_data: pd.DataFrame | None,
+    auxiliary_data: Any | None,
 ) -> Any:
     if isinstance(estimator, WrappedEstimator):
         return estimator.estimate(data, spec, auxiliary_data=auxiliary_data)
@@ -44,7 +44,7 @@ def run_estimator_race(
     data: pd.DataFrame,
     spec: ExperimentSpec,
     estimators: Iterable[Any] | None = None,
-    auxiliary_data: pd.DataFrame | None = None,
+    auxiliary_data: Any | None = None,
     measure_memory: bool = False,
 ) -> pd.DataFrame:
     """Run estimators sequentially and return a compact result table."""

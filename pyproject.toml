@@ -21,6 +21,9 @@ dependencies = [
 dev = [
   "pytest>=8",
 ]
+ml = [
+  "scikit-learn>=1.2,<2",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -73,6 +73,12 @@ def _load_config(
         mutation_probability=float(strata["mutation_probability"]),
         prefer_pypi_hypex=bool(runtime["prefer_pypi_hypex"]),
         include_stratified=bool(strata["enabled"]),
+        information_mode=str(simulation.get("information_mode", "both")),
+        panel_prior_months=int(simulation.get("panel_prior_months", 6)),
+        include_non_rct_specialized=bool(
+            simulation.get("include_non_rct_specialized", False)
+        ),
+        include_cartesian=bool(simulation.get("include_cartesian", False)),
     )
     return config, ROOT / str(raw["output"]["directory"])
 
@@ -96,12 +102,49 @@ def _validate_race_matrix(
         if config.heavy_tail is not None
         else set(config.scenario_ids)
     )
-    expected_rows = (
-        config.n_trials
-        * len(expected_scenarios)
-        * 2
-        * len(expected_pipelines)
+    modes = (
+        ("experiment_only", "panel_prior")
+        if config.information_mode == "both"
+        else (config.information_mode,)
     )
+    population_ids = {
+        "stratified_mean_diff",
+        "population_weighted_stratified",
+        "calibration_reweighting",
+    }
+    catalog_definitions = pipeline_definitions(config)
+    base_definitions = [
+        definition
+        for definition in catalog_definitions
+        if definition.pipeline_id not in population_ids
+    ]
+    population_definitions = [
+        definition
+        for definition in catalog_definitions
+        if definition.pipeline_id in population_ids
+    ]
+    expected_by_mode = {}
+    for mode in modes:
+        definitions_for_mode = base_definitions
+        if mode == "panel_prior" and "population_shifted_strata" in expected_scenarios:
+            definitions_for_mode = base_definitions + population_definitions
+        expected_by_mode[mode] = {
+            definition.pipeline_id
+            for definition in definitions_for_mode
+            if definition.information_mode == "experiment_only"
+            or definition.information_mode == mode
+        }
+    expected_rows = 0
+    for scenario_id in expected_scenarios:
+        for mode in modes:
+            scenario_definitions = base_definitions
+            if mode == "panel_prior" and scenario_id == "population_shifted_strata":
+                scenario_definitions = base_definitions + population_definitions
+            expected_rows += config.n_trials * 2 * sum(
+                definition.information_mode == "experiment_only"
+                or definition.information_mode == mode
+                for definition in scenario_definitions
+            )
     if len(raw) != expected_rows:
         raise RuntimeError(
             f"Race matrix has {len(raw)} rows; expected {expected_rows}."
@@ -112,7 +155,21 @@ def _validate_race_matrix(
         raise RuntimeError("Race matrix does not contain the expected scenarios.")
     if set(raw["hypothesis"]) != {"H0", "H1"}:
         raise RuntimeError("Race matrix must contain both H0 and H1.")
-    keys = ["data_scenario", "pipeline", "hypothesis", "trial"]
+    observed_by_mode = {
+        mode: set(raw.loc[raw["race_information_mode"] == mode, "pipeline"])
+        for mode in modes
+    }
+    if observed_by_mode != expected_by_mode:
+        raise RuntimeError(
+            "Race matrix does not contain the expected pipelines by information mode."
+        )
+    keys = [
+        "data_scenario",
+        "race_information_mode",
+        "pipeline",
+        "hypothesis",
+        "trial",
+    ]
     if raw.duplicated(keys).any():
         raise RuntimeError("Race matrix contains duplicate scenario/pipeline trials.")
 
@@ -132,7 +189,8 @@ def _plot_scenarios(summary: pd.DataFrame, output_dir: Path) -> list[Path]:
     paths: list[Path] = []
     for scenario_id, frame in summary.groupby("data_scenario", sort=False):
         comparable = frame.loc[
-            frame["pipeline_tier"] != "changed_metric"
+            (frame["pipeline_tier"] != "changed_metric")
+            & frame["ranking_eligible"]
         ].sort_values("empirical_sd_h1", ascending=True)
         if comparable.empty:
             continue
@@ -183,7 +241,7 @@ def _plot_scenarios(summary: pd.DataFrame, output_dir: Path) -> list[Path]:
 
 def _winner_sentence(frame: pd.DataFrame) -> str:
     eligible = frame.loc[
-        frame["passes_diagnostic_screen"]
+        frame.get("ranking_eligible", frame["passes_diagnostic_screen"])
         & frame["pipeline_tier"].isin(["confirmatory", "exploratory"])
     ].sort_values("empirical_sd_h1")
     if eligible.empty:
@@ -446,6 +504,14 @@ def main() -> None:
         help="Run only this pipeline ID; repeat the option for several pipelines.",
     )
     parser.add_argument(
+        "--cartesian",
+        action="store_true",
+        help=(
+            "Add the full Cartesian product of compatible RCT estimators and "
+            "target transformations."
+        ),
+    )
+    parser.add_argument(
         "--merge-existing",
         action="store_true",
         help=(
@@ -463,10 +529,10 @@ def main() -> None:
     base_config, output_dir = _load_config(args.config, args.trials)
     if args.merge_existing and not args.pipeline:
         parser.error("--merge-existing requires at least one --pipeline.")
-    config = (
-        dataclasses.replace(base_config, pipeline_ids=tuple(args.pipeline))
-        if args.pipeline
-        else base_config
+    config = dataclasses.replace(
+        base_config,
+        pipeline_ids=tuple(args.pipeline) if args.pipeline else base_config.pipeline_ids,
+        include_cartesian=(base_config.include_cartesian or args.cartesian),
     )
     pipeline_definitions(config)
     if args.output_dir is not None:
@@ -577,10 +643,18 @@ def main() -> None:
             index=False,
             compression="gzip",
         )
+        raw.to_csv(
+            output_dir / "raw_results.csv",
+            index=False,
+            encoding="utf-8-sig",
+        )
     else:
         stale_raw = output_dir / "raw_results.csv.gz"
         if stale_raw.exists():
             stale_raw.unlink()
+        stale_plain_raw = output_dir / "raw_results.csv"
+        if stale_plain_raw.exists():
+            stale_plain_raw.unlink()
     metadata = {
         "config": dataclasses.asdict(report_config),
         "rows": int(len(raw)),
