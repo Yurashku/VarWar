@@ -559,6 +559,11 @@ def main() -> None:
         help="Number of independent worker processes for Monte Carlo trials.",
     )
     parser.add_argument(
+        "--no-plain-raw",
+        action="store_true",
+        help="Keep only raw_results.csv.gz; omit the redundant uncompressed CSV.",
+    )
+    parser.add_argument(
         "--config",
         type=Path,
         default=ROOT / "configs" / "pipeline_race_v2.toml",
@@ -695,11 +700,16 @@ def main() -> None:
             index=False,
             compression="gzip",
         )
-        raw.to_csv(
-            output_dir / "raw_results.csv",
-            index=False,
-            encoding="utf-8-sig",
-        )
+        if args.no_plain_raw:
+            plain_raw = output_dir / "raw_results.csv"
+            if plain_raw.exists():
+                plain_raw.unlink()
+        else:
+            raw.to_csv(
+                output_dir / "raw_results.csv",
+                index=False,
+                encoding="utf-8-sig",
+            )
     else:
         stale_raw = output_dir / "raw_results.csv.gz"
         if stale_raw.exists():
@@ -712,6 +722,9 @@ def main() -> None:
         "rows": int(len(raw)),
         "successful_rows": int((raw["status"] == "ok").sum()),
         "raw_results_saved": not args.no_save_raw,
+        "raw_results_plain_saved": (
+            not args.no_save_raw and not args.no_plain_raw
+        ),
         "selection_file": "selection.csv",
         "selection_criterion": (
             "diagnostic screen + scientific sample size; min empirical SD, "

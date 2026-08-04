@@ -50,5 +50,6 @@
     "scipy": "1.13.1",
     "matplotlib": "3.9.0"
   },
-  "memory_metric": "tracemalloc peak Python allocations; native NumPy/BLAS buffers excluded"
+  "memory_metric": "tracemalloc peak Python allocations; native NumPy/BLAS buffers excluded",
+  "raw_results_plain_saved": false
 }
