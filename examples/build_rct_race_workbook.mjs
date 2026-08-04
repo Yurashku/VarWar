@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { gunzipSync } from "node:zlib";
 import { SpreadsheetFile, Workbook } from "@oai/artifact-tool";
 
 const inputDir = path.resolve(process.argv[2] ?? "results/rct_pipeline_race");
@@ -87,7 +88,18 @@ function distinct(values) {
     .sort();
 }
 
-const rawSource = csvRows(await fs.readFile(path.join(inputDir, "raw_results.csv"), "utf8"));
+async function readRawCsv(inputDirectory) {
+  try {
+    return await fs.readFile(path.join(inputDirectory, "raw_results.csv"), "utf8");
+  } catch (error) {
+    const compressed = await fs.readFile(
+      path.join(inputDirectory, "raw_results.csv.gz"),
+    );
+    return gunzipSync(compressed).toString("utf8");
+  }
+}
+
+const rawSource = csvRows(await readRawCsv(inputDir));
 // Excel is the interactive reporting surface. Keep the canonical full raw
 // CSV beside it, but write only fields used by filters, formulas, and audit
 // of one trial to avoid turning sparse diagnostics into millions of objects.
@@ -229,7 +241,7 @@ if (includeTrialRows) {
 } else {
   fullRuns.getRange("A1:F3").values = [
     ["Trial-level строки вынесены из Excel для компактности.", null, null, null, null, null],
-    ["Полный raw_results.csv и raw_results.csv.gz лежат рядом с книгой.", null, null, null, null, null],
+    ["Полный raw_results.csv.gz лежит рядом с книгой.", null, null, null, null, null],
     ["Дашборд работает по агрегатам и не требует этого листа.", null, null, null, null, null],
   ];
   fullRuns.getRange("A1:F1").format = headerFormat;
