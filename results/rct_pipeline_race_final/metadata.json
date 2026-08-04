@@ -1,6 +1,6 @@
 {
   "config": {
-    "n_trials": 5,
+    "n_trials": 100,
     "n": 2500,
     "alternative_effect": 0.15,
     "covariate_signal": 0.75,
@@ -36,9 +36,12 @@
     "include_non_rct_specialized": false,
     "include_cartesian": false
   },
-  "rows": 2970,
-  "successful_rows": 2970,
+  "rows": 59400,
+  "successful_rows": 59400,
   "raw_results_saved": true,
+  "selection_file": "selection.csv",
+  "selection_criterion": "diagnostic screen + scientific sample size; min empirical SD, then runtime, then pipeline ID",
+  "workers": 2,
   "refreshed_pipelines": [],
   "package_versions": {
     "hypex": "1.0.6",
@@ -47,7 +50,5 @@
     "scipy": "1.13.1",
     "matplotlib": "3.9.0"
   },
-  "memory_metric": "tracemalloc peak Python allocations; native NumPy/BLAS buffers excluded",
-  "selection_file": "selection.csv",
-  "selection_criterion": "diagnostic screen + scientific sample size; min empirical SD, then runtime, then pipeline ID"
+  "memory_metric": "tracemalloc peak Python allocations; native NumPy/BLAS buffers excluded"
 }

@@ -139,6 +139,8 @@ const rawHeaders = [...raw.headers, "effect_sq", "covered_true_effect"];
 const allRaw = [rawHeaders, ...rawWithHelpers];
 const rawLastColumn = excelColumn(rawHeaders.length - 1);
 const rawLastRow = allRaw.length;
+const includeTrialRows = process.env.VARWAR_INCLUDE_TRIALS === "1"
+  || rawSource.values.length <= 25_000;
 
 const summaryIndex = indexByHeader(summary.headers);
 const observed = new Map();
@@ -194,34 +196,45 @@ const headerFormat = {
   wrapText: true,
 };
 
-fullRuns.getRange(`A1:${rawLastColumn}${rawLastRow}`).values = allRaw;
-fullRuns.getRange(`A1:${rawLastColumn}1`).format = headerFormat;
-fullRuns.freezePanes.freezeRows(1);
-fullRuns.freezePanes.freezeColumns(5);
-fullRuns.tables.add(`A1:${rawLastColumn}${rawLastRow}`, true, "FullRaceResults");
-fullRuns.getRange(`A1:${rawLastColumn}${rawLastRow}`).format.font = { name: "Aptos", size: 9 };
-fullRuns.getRange(`A1:${rawLastColumn}1`).format = headerFormat;
-for (const [header, width] of Object.entries({
-  data_scenario: 20,
-  race_information_mode: 18,
-  temporal_mode: 22,
-  pipeline: 34,
-  pipeline_name_ru: 42,
-  effect: 13,
-  standard_error: 13,
-  p_value: 12,
-  ci_low: 13,
-  ci_high: 13,
-  status: 11,
-})) {
-  const col = excelColumn(rawIndex[header]);
-  fullRuns.getRange(`${col}:${col}`).format.columnWidth = width;
-}
-fullRuns.getRange(`A1:${rawLastColumn}${rawLastRow}`).format.rowHeight = 18;
-fullRuns.getRange(`A2:${rawLastColumn}${rawLastRow}`).format.numberFormat = "General";
-for (const header of ["effect", "standard_error", "p_value", "ci_low", "ci_high", "effect_sq"]) {
-  const col = excelColumn(rawHeaders.indexOf(header));
-  fullRuns.getRange(`${col}2:${col}${rawLastRow}`).format.numberFormat = "0.0000";
+if (includeTrialRows) {
+  fullRuns.getRange(`A1:${rawLastColumn}${rawLastRow}`).values = allRaw;
+  fullRuns.getRange(`A1:${rawLastColumn}1`).format = headerFormat;
+  fullRuns.freezePanes.freezeRows(1);
+  fullRuns.freezePanes.freezeColumns(5);
+  fullRuns.tables.add(`A1:${rawLastColumn}${rawLastRow}`, true, "FullRaceResults");
+  fullRuns.getRange(`A1:${rawLastColumn}${rawLastRow}`).format.font = { name: "Aptos", size: 9 };
+  fullRuns.getRange(`A1:${rawLastColumn}1`).format = headerFormat;
+  for (const [header, width] of Object.entries({
+    data_scenario: 20,
+    race_information_mode: 18,
+    temporal_mode: 22,
+    pipeline: 34,
+    pipeline_name_ru: 42,
+    effect: 13,
+    standard_error: 13,
+    p_value: 12,
+    ci_low: 13,
+    ci_high: 13,
+    status: 11,
+  })) {
+    const col = excelColumn(rawIndex[header]);
+    fullRuns.getRange(`${col}:${col}`).format.columnWidth = width;
+  }
+  fullRuns.getRange(`A1:${rawLastColumn}${rawLastRow}`).format.rowHeight = 18;
+  fullRuns.getRange(`A2:${rawLastColumn}${rawLastRow}`).format.numberFormat = "General";
+  for (const header of ["effect", "standard_error", "p_value", "ci_low", "ci_high", "effect_sq"]) {
+    const col = excelColumn(rawHeaders.indexOf(header));
+    fullRuns.getRange(`${col}2:${col}${rawLastRow}`).format.numberFormat = "0.0000";
+  }
+} else {
+  fullRuns.getRange("A1:F3").values = [
+    ["Trial-level строки вынесены из Excel для компактности.", null, null, null, null, null],
+    ["Полный raw_results.csv и raw_results.csv.gz лежат рядом с книгой.", null, null, null, null, null],
+    ["Дашборд работает по агрегатам и не требует этого листа.", null, null, null, null, null],
+  ];
+  fullRuns.getRange("A1:F1").format = headerFormat;
+  fullRuns.getRange("A:A").format.columnWidth = 92;
+  fullRuns.getRange("A1:F3").format.wrapText = true;
 }
 
 const catalogHeaders = catalog.headers;
@@ -314,10 +327,14 @@ if (selection.headers.length > 0) {
     name: "Aptos",
     size: 9,
   };
+  selectionSheet.getRange(`A1:${selectionLast}${selection.values.length + 1}`).format.wrapText = true;
+  selectionSheet.getRange(`A1:${selectionLast}${selection.values.length + 1}`).format.rowHeight = 24;
   selectionSheet.getRange("A:A").format.columnWidth = 24;
   selectionSheet.getRange("B:D").format.columnWidth = 22;
-  selectionSheet.getRange("G:G").format.columnWidth = 34;
-  selectionSheet.getRange("L:M").format.columnWidth = 30;
+  selectionSheet.getRange("G:G").format.columnWidth = 38;
+  selectionSheet.getRange("H:H").format.columnWidth = 38;
+  selectionSheet.getRange("I:K").format.columnWidth = 20;
+  selectionSheet.getRange("L:M").format.columnWidth = 36;
 } else {
   selectionSheet.getRange("A1").values = [[
     "selection.csv отсутствует: запуск не содержал агрегированного критерия отбора.",
@@ -350,7 +367,11 @@ dashboard.getRange("A1:L1").merge();
 dashboard.getRange("A1").values = [["VarWar: дашборд гонки пайплайнов РКИ"]];
 dashboard.getRange("A1:L1").format = titleFormat;
 dashboard.getRange("A2:L2").merge();
-dashboard.getRange("A2").values = [["Фильтры агрегируют лист «Агрегированные результаты»; компактные trial-level строки находятся на листе «Полные прогоны», полный raw CSV с diagnostics сохранён рядом с книгой. Рейтинг не следует интерпретировать как доказательство при малом числе повторений."]];
+dashboard.getRange("A2").values = [[
+  `Фильтры агрегируют лист «Агрегированные результаты»; ${includeTrialRows
+    ? "компактные trial-level строки находятся на листе «Полные прогоны»"
+    : "trial-level строки доступны в полном raw CSV рядом с книгой"}; рейтинг не следует интерпретировать как доказательство при малом числе повторений.`,
+]];
 dashboard.getRange("A2:L2").format = { fill: pale, font: { italic: true, color: "#44546A" }, wrapText: true };
 dashboard.getRange("A3:B8").values = [
   ["Режим информации гонки", "Все"],
@@ -403,11 +424,11 @@ const sr = (header) => `${summarySheet}!$${excelColumn(summaryIndex[header])}$2:
 for (let rowNumber = tableStart + 1; rowNumber <= dashboardEnd; rowNumber += 1) {
   const criteria = [
     `${sr("pipeline")},$A${rowNumber}`,
-    `${sr("race_information_mode")},IF($B$3="Все","*",$B$3)`,
-    `${sr("temporal_mode")},IF($B$4="Все","*",$B$4)`,
+    `${sr("race_information_mode")},IF($B$3="Все",$C${rowNumber},$B$3)`,
+    `${sr("temporal_mode")},IF($B$4="Все",$D${rowNumber},$B$4)`,
     `${sr("data_scenario")},IF($B$5="Все","*",$B$5)`,
-    `${sr("pipeline_tier")},IF($B$6="Все","*",$B$6)`,
-    `${sr("estimand_id")},IF($B$7="Все","*",$B$7)`,
+    `${sr("pipeline_tier")},IF($B$6="Все",$E${rowNumber},$B$6)`,
+    `${sr("estimand_id")},IF($B$7="Все",$F${rowNumber},$B$7)`,
   ];
   if (summaryIndex.run_family !== undefined) {
     criteria.push(`${sr("run_family")},IF($B$8="Все","*",$B$8)`);

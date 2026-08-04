@@ -246,6 +246,29 @@ class PipelineBenchmarkTests(unittest.TestCase):
             {"welch", "ga_strata__stratified"},
         )
 
+    def test_trial_indices_keep_global_trial_labels(self) -> None:
+        config = SyntheticPipelineRaceConfig(
+            n_trials=3,
+            n=300,
+            scenario_ids=("linear_gaussian",),
+            include_stratified=False,
+            prefer_pypi_hypex=False,
+            pipeline_ids=("welch",),
+        )
+        selected = run_synthetic_pipeline_race(config, trial_indices=(2,))
+        self.assertEqual(set(selected["trial"]), {2})
+        repeated = run_synthetic_pipeline_race(config, trial_indices=(2,))
+        deterministic_columns = [
+            column
+            for column in selected.columns
+            if "runtime" not in column and "memory" not in column
+        ]
+        pd.testing.assert_frame_equal(
+            selected[deterministic_columns].reset_index(drop=True),
+            repeated[deterministic_columns].reset_index(drop=True),
+            check_dtype=False,
+        )
+
     def test_population_information_race_has_sample_and_population_estimands(self) -> None:
         config = SyntheticPipelineRaceConfig(
             n_trials=1,

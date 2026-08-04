@@ -4,6 +4,7 @@ import gc
 import math
 import time
 import tracemalloc
+from concurrent.futures import ProcessPoolExecutor
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from typing import Any
@@ -515,6 +516,7 @@ def run_synthetic_pipeline_race(
     progress: Callable[[int, int], None] | None = None,
     *,
     measure_memory: bool = False,
+    trial_indices: Iterable[int] | None = None,
 ) -> pd.DataFrame:
     """Запустить paired H0/H1 гонку на нескольких синтетических сценариях.
 
@@ -543,11 +545,20 @@ def run_synthetic_pipeline_race(
         if config.information_mode == "both"
         else (config.information_mode,)
     )
-    total = config.n_trials * len(scenarios) * len(information_modes)
+    trials = (
+        tuple(range(config.n_trials))
+        if trial_indices is None
+        else tuple(int(trial) for trial in trial_indices)
+    )
+    if not trials:
+        raise ValueError("trial_indices must contain at least one trial.")
+    if min(trials) < 0 or max(trials) >= config.n_trials:
+        raise ValueError("trial_indices must be within [0, config.n_trials).")
+    total = len(trials) * len(scenarios) * len(information_modes)
     completed = 0
 
     for scenario_index, scenario in enumerate(scenarios):
-        for trial in range(config.n_trials):
+        for trial in trials:
             seed = config.seed + scenario_index * 1_000_000 + trial
             null, alternative = _experiment_pair(config, scenario, seed)
             population_true_effect = config.alternative_effect
@@ -695,6 +706,45 @@ def run_synthetic_pipeline_race(
     if not rows:
         raise ValueError("No pipelines were selected for the synthetic race.")
     return pd.concat(rows, ignore_index=True, sort=False)
+
+
+def _run_synthetic_pipeline_chunk(
+    payload: tuple[SyntheticPipelineRaceConfig, tuple[int, ...]],
+) -> pd.DataFrame:
+    """Worker entry point kept at module level for Windows process spawning."""
+
+    config, trial_indices = payload
+    return run_synthetic_pipeline_race(config, trial_indices=trial_indices)
+
+
+def run_synthetic_pipeline_race_parallel(
+    config: SyntheticPipelineRaceConfig = SyntheticPipelineRaceConfig(),
+    *,
+    workers: int = 2,
+    chunk_size: int = 1,
+) -> pd.DataFrame:
+    """Запустить независимые Monte Carlo-повторы в отдельных процессах.
+
+    В каждом повторе сохраняется исходный seed
+    ``config.seed + scenario_index * 1_000_000 + trial``. Поэтому параллельный
+    режим меняет только время выполнения, а не статистический результат.
+    ``chunk_size`` уменьшает накладные расходы сериализации для длинных гонок.
+    """
+
+    if workers < 1:
+        raise ValueError("workers must be positive.")
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be positive.")
+    if workers == 1 or config.n_trials == 1:
+        return run_synthetic_pipeline_race(config)
+    trial_chunks = tuple(
+        tuple(range(start, min(start + chunk_size, config.n_trials)))
+        for start in range(0, config.n_trials, chunk_size)
+    )
+    payloads = tuple((config, chunk) for chunk in trial_chunks)
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        frames = list(executor.map(_run_synthetic_pipeline_chunk, payloads))
+    return pd.concat(frames, ignore_index=True, sort=False)
 
 
 def profile_synthetic_pipeline_memory(

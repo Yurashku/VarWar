@@ -22,6 +22,7 @@ from varwar.pipeline_benchmark import (
     pipeline_definitions,
     profile_synthetic_pipeline_memory,
     run_synthetic_pipeline_race,
+    run_synthetic_pipeline_race_parallel,
     select_best_pipelines,
     summarize_synthetic_pipeline_race,
 )
@@ -552,6 +553,12 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of independent worker processes for Monte Carlo trials.",
+    )
+    parser.add_argument(
         "--config",
         type=Path,
         default=ROOT / "configs" / "pipeline_race_v2.toml",
@@ -581,10 +588,17 @@ def main() -> None:
         if done == 1 or done == total or done % 20 == 0:
             print(f"Готово пар scenario/trial: {done}/{total}", flush=True)
 
-    refreshed = run_synthetic_pipeline_race(
-        config,
-        progress=None if args.quiet else progress,
-    )
+    if args.workers > 1:
+        refreshed = run_synthetic_pipeline_race_parallel(
+            config,
+            workers=args.workers,
+            chunk_size=1,
+        )
+    else:
+        refreshed = run_synthetic_pipeline_race(
+            config,
+            progress=None if args.quiet else progress,
+        )
     report_config = config
     if args.merge_existing:
         raw_path = output_dir / "raw_results.csv.gz"
@@ -703,6 +717,7 @@ def main() -> None:
             "diagnostic screen + scientific sample size; min empirical SD, "
             "then runtime, then pipeline ID"
         ),
+        "workers": int(args.workers),
         "refreshed_pipelines": list(config.pipeline_ids or ()),
         "package_versions": {
             package: _package_version(package)
