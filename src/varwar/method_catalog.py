@@ -13,6 +13,9 @@ class MethodCategory(str, Enum):
     TARGET_TRANSFORMER = "TargetTransformer"
     METRIC_TRANSFORMER = "MetricTransformer"
     DESIGN_PREPROCESSOR = "DesignPreprocessor"
+    RANDOMIZATION_STRUCTURE_BUILDER = "RandomizationStructureBuilder"
+    ASSIGNMENT_MECHANISM = "AssignmentMechanism"
+    ANALYSIS_METHOD = "AnalysisMethod"
     FEATURE_ADAPTER = "FeatureAdapter"
     INFERENCE_CORRECTION = "InferenceCorrection"
     CONFIGURATION_PROFILE = "ConfigurationProfile"
@@ -246,10 +249,10 @@ _METHODS = (
     MethodRecord(
         "anti_nuclear_ks_test",
         MethodCategory.HYPOTHESIS_TEST,
-        MethodStatus.PLACEHOLDER_RND,
-        "Tie-aware KS candidate with treatment-blind controlled de-tying and permutation-calibrated inference.",
-        "varwar.estimators.PlaceholderEstimator",
-        "distribution_test_backlog",
+        MethodStatus.IMPLEMENTED,
+        "Treatment-blind deterministic de-tying used inside mixed-balance rerandomization diagnostics.",
+        "varwar.assignment.RerandomizationMixedBalance",
+        "assignment_diagnostic",
     ),
     MethodRecord(
         "cuped",
@@ -292,16 +295,16 @@ _METHODS = (
     MethodRecord(
         "nonlinear_cupac",
         MethodCategory.TARGET_TRANSFORMER,
-        MethodStatus.PLACEHOLDER_RND,
-        "General nonlinear temporal CUPAC beyond the implemented bounded quadratic model.",
-        "varwar.placeholders.PlaceholderTargetTransformer",
+        MethodStatus.IMPLEMENTED,
+        "Temporal CUPAC A selecting ridge, quadratic ridge, random forest, extra trees or histogram gradient boosting by pre-period CV.",
+        "varwar.advanced_transforms.AutoMLTemporalCupacTransformer",
     ),
     MethodRecord(
         "robust_cuped",
         MethodCategory.TARGET_TRANSFORMER,
-        MethodStatus.PLACEHOLDER_RND,
-        "CUPED-family adjustment with a robustly estimated coefficient for heavy-tailed experiment data.",
-        "varwar.placeholders.PlaceholderTargetTransformer",
+        MethodStatus.IMPLEMENTED,
+        "Historical CUPED whose slope is estimated by Huber regression only from the lag2-to-lag1 transition.",
+        "varwar.advanced_transforms.RobustHistoricalCupedTransformer",
     ),
     MethodRecord(
         "winsorized",
@@ -313,9 +316,10 @@ _METHODS = (
     MethodRecord(
         "trimming",
         MethodCategory.TARGET_TRANSFORMER,
-        MethodStatus.PLACEHOLDER_RND,
-        "Control-defined tail removal awaiting a composable missing-row and inference contract.",
-        "varwar.placeholders.PlaceholderTargetTransformer",
+        MethodStatus.EXCLUDED,
+        "Old transformer label replaced by the Yuen trimmed-effect AnalysisMethod with its own estimand and inference.",
+        "varwar.robust_estimators.YuenTrimmedMeanEstimator",
+        "excluded_alias",
     ),
     MethodRecord(
         "isolation_forest_trimming",
@@ -336,7 +340,7 @@ _METHODS = (
     MethodRecord(
         "bayesian_cupac",
         MethodCategory.TARGET_TRANSFORMER,
-        MethodStatus.PLACEHOLDER_NEEDS_SPEC,
+        MethodStatus.EXCLUDED,
         "Historical alias; use panel_prior_cupac for the implemented panel-summary prior contract.",
         "varwar.placeholders.PlaceholderTargetTransformer",
     ),
@@ -367,7 +371,7 @@ _METHODS = (
     MethodRecord(
         "ratio_linearization",
         MethodCategory.METRIC_TRANSFORMER,
-        MethodStatus.PLACEHOLDER_RND,
+        MethodStatus.EXCLUDED,
         "Composable linearization of a ratio metric before CUPED/CUPAC and a compatible base estimator.",
         "varwar.placeholders.PlaceholderMetricTransformer",
     ),
@@ -412,11 +416,11 @@ _METHODS = (
     ),
     MethodRecord(
         "prognostic_score_block_randomization",
-        MethodCategory.DESIGN_PREPROCESSOR,
-        MethodStatus.PLACEHOLDER_RND,
-        "Randomized assignment within blocks formed by an honest pre-treatment prognostic score.",
-        "varwar.placeholders.PlaceholderDesignPreprocessor",
-        "prospective_design_backlog",
+        MethodCategory.RANDOMIZATION_STRUCTURE_BUILDER,
+        MethodStatus.IMPLEMENTED,
+        "Frozen ridge prognostic score and quantile blocks fitted only on pre-treatment data.",
+        "varwar.randomization_structure.PrognosticScoreBlockBuilder",
+        "active_rct_design",
     ),
     MethodRecord(
         "calibration_reweighting",
@@ -437,10 +441,10 @@ _METHODS = (
     MethodRecord(
         "optimal_transport_homogeneity_test",
         MethodCategory.HYPOTHESIS_TEST,
-        MethodStatus.PLACEHOLDER_RND,
-        "Optimal-transport two-sample homogeneity test; calibration and a scalable solver contract remain to be fixed.",
-        "varwar.estimators.PlaceholderEstimator",
-        "distribution_test_backlog",
+        MethodStatus.EXCLUDED,
+        "Excluded: the active OT implementation is an ATE matching estimator, not a distribution test.",
+        "not_applicable",
+        "excluded",
     ),
     MethodRecord(
         "hypex_matcher",
@@ -647,6 +651,72 @@ _METHODS = (
         "varwar.pipelines.build_stratified_pipelines",
         "primary_pipeline_race",
     ),
+    MethodRecord("complete_randomization", MethodCategory.ASSIGNMENT_MECHANISM, MethodStatus.IMPLEMENTED, "Полная рандомизация с точными размерами групп.", "varwar.assignment.CompleteRandomization", "active_rct_design"),
+    MethodRecord("stratified_randomization", MethodCategory.ASSIGNMENT_MECHANISM, MethodStatus.IMPLEMENTED, "Назначение внутри заранее построенных страт с точным общим размером treatment.", "varwar.assignment.StratifiedRandomization", "active_rct_design"),
+    MethodRecord("rerandomization_mahalanobis", MethodCategory.ASSIGNMENT_MECHANISM, MethodStatus.IMPLEMENTED, "Рерандомизация по заранее откалиброванному расстоянию Махаланобиса.", "varwar.assignment.RerandomizationMahalanobis", "active_rct_design"),
+    MethodRecord("rerandomization_max_smd", MethodCategory.ASSIGNMENT_MECHANISM, MethodStatus.IMPLEMENTED, "Рерандомизация по максимальному абсолютному SMD.", "varwar.assignment.RerandomizationMaxSMD", "active_rct_design"),
+    MethodRecord("rerandomization_mixed_balance", MethodCategory.ASSIGNMENT_MECHANISM, MethodStatus.IMPLEMENTED, "Рерандомизация по числовому, категориальному и tie-aware распределительному балансу.", "varwar.assignment.RerandomizationMixedBalance", "active_rct_design"),
+    MethodRecord("hypex_aa_best_of_k", MethodCategory.ASSIGNMENT_MECHANISM, MethodStatus.IMPLEMENTED_INTEGRATION, "Политика выбора сплита через официальный PyPI HypEx AATest.", "varwar.assignment.HypExAABestOfK", "integration_parity"),
+    MethodRecord("prognostic_blocks", MethodCategory.RANDOMIZATION_STRUCTURE_BUILDER, MethodStatus.IMPLEMENTED, "Блоки по честному pre-treatment prognostic score.", "varwar.randomization_structure.PrognosticScoreBlockBuilder", "active_rct_design"),
+    MethodRecord("cuped_historical", MethodCategory.TARGET_TRANSFORMER, MethodStatus.IMPLEMENTED, "CUPED с коэффициентом, зафиксированным по историческому переходу lag2 к lag1.", "varwar.target_registry._HistoricalCupedTransformer", "active_rct_analysis"),
+    MethodRecord("cuped_huber_historical", MethodCategory.TARGET_TRANSFORMER, MethodStatus.IMPLEMENTED, "Исторический CUPED с Huber-оценкой коэффициента.", "varwar.advanced_transforms.RobustHistoricalCupedTransformer", "active_rct_analysis"),
+    MethodRecord("cupac_automl_A", MethodCategory.TARGET_TRANSFORMER, MethodStatus.IMPLEMENTED, "CUPAC A с автоматическим выбором pre-period ML-модели.", "varwar.advanced_transforms.AutoMLTemporalCupacTransformer", "active_rct_analysis"),
+    MethodRecord("yuen_trimmed_effect", MethodCategory.ANALYSIS_METHOD, MethodStatus.IMPLEMENTED, "Разность усечённых средних с выводом Юэна; estimand отличается от ATE.", "varwar.robust_estimators.YuenTrimmedMeanEstimator", "robust_native"),
+    MethodRecord("winsorized_effect_bootstrap", MethodCategory.ANALYSIS_METHOD, MethodStatus.IMPLEMENTED, "Разность винзоризированных средних с полным переобучением границ в bootstrap.", "varwar.robust_estimators.FullRefitWinsorizedMeanEstimator", "robust_native"),
+    MethodRecord("median_of_means_ate", MethodCategory.ANALYSIS_METHOD, MethodStatus.IMPLEMENTED, "Исследовательская устойчивая оценка исходного среднего через median-of-means.", "varwar.robust_estimators.MedianOfMeansEstimator", "robust_mean_ate"),
+    MethodRecord("catoni_mean_ate", MethodCategory.ANALYSIS_METHOD, MethodStatus.IMPLEMENTED, "Исследовательская Catoni-оценка исходного среднего.", "varwar.robust_estimators.CatoniMeanEstimator", "robust_mean_ate"),
+    MethodRecord(
+        "population_weighted_stratified_ate__native",
+        MethodCategory.ANALYSIS_METHOD,
+        MethodStatus.IMPLEMENTED,
+        "Стратифицированная оценка population ATE с долями страт из полной исторической панели.",
+        "varwar.analysis_registry.build_analysis_method_registry",
+        "population_ate",
+    ),
+    MethodRecord(
+        "calibration_weighted_population_ate__native",
+        MethodCategory.ANALYSIS_METHOD,
+        MethodStatus.IMPLEMENTED,
+        "Оценка population ATE с калибровкой весов по известным моментам целевой популяции.",
+        "varwar.analysis_registry.build_analysis_method_registry",
+        "population_ate",
+    ),
+)
+
+# The executable v3 registries are the source of truth for newly composed
+# TargetTransformer and AnalysisMethod IDs.  Historical records above remain
+# searchable, while missing current IDs are added without duplicating aliases.
+from varwar.analysis_registry import build_analysis_method_registry as _build_analysis_registry
+from varwar.target_registry import TARGET_REGISTRY as _TARGET_REGISTRY
+
+_known_method_ids = {record.method_id for record in _METHODS}
+_METHODS += tuple(
+    MethodRecord(
+        method_id,
+        MethodCategory.TARGET_TRANSFORMER,
+        MethodStatus.IMPLEMENTED if definition.available else MethodStatus.EXCLUDED,
+        definition.title_ru,
+        "varwar.target_registry.TARGET_REGISTRY",
+        "active_rct_analysis" if definition.available else "unavailable_integration_alias",
+    )
+    for method_id, definition in _TARGET_REGISTRY.items()
+    if method_id not in _known_method_ids
+)
+_known_method_ids = {record.method_id for record in _METHODS}
+_METHODS += tuple(
+    MethodRecord(
+        method_id,
+        MethodCategory.ANALYSIS_METHOD,
+        MethodStatus.IMPLEMENTED_INTEGRATION if "hypex" in method_id else MethodStatus.IMPLEMENTED,
+        "Зарегистрированная неделимая пара точечной оценки и допустимого статистического вывода.",
+        "varwar.analysis_registry.build_analysis_method_registry",
+        method.contract.ranking_track,
+    )
+    for method_id, method in _build_analysis_registry(
+        resamples=99,
+        prefer_pypi_hypex=False,
+    ).items()
+    if method_id not in _known_method_ids
 )
 
 _RCT_PRE_ESTIMATORS = {

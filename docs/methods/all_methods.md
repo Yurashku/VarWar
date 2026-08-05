@@ -89,16 +89,17 @@ OT-тест однородности и OT-matching решают разные з
 | --- | --- | --- | --- |
 | M01 | `ratio_linearization` | Линеаризация ratio-метрики | кандидат R&D |
 
-## FeatureAdapter и DesignPreprocessor
+## FeatureAdapter и RandomizationStructureBuilder
 
 | № | ID | Категория | Русское название | Статус |
 | --- | --- | --- | --- | --- |
 | F01 | `numeric_feature_binner` | FeatureAdapter | Биннинг числовых признаков | реализован |
-| D01 | `atomic_strata` | DesignPreprocessor | Полные атомарные страты | реализован |
-| D02 | `random_reduction` | DesignPreprocessor | Случайное укрупнение страт | реализован |
-| D03 | `mean_sorted_reduction` | DesignPreprocessor | Укрупнение по pre-period среднему | реализован |
-| D04 | `genetic_strata_reducer` | DesignPreprocessor | Генетическое укрупнение страт | реализован |
-| D05 | `prognostic_score_block_randomization` | DesignPreprocessor | Блочная рандомизация | кандидат R&D |
+| D01 | `atomic_strata` | RandomizationStructureBuilder | Полные атомарные страты | реализован |
+| D02 | `random_reduction` | RandomizationStructureBuilder | Случайное укрупнение страт | реализован |
+| D03 | `mean_sorted_reduction` | RandomizationStructureBuilder | Укрупнение по pre-period среднему | реализован |
+| D04 | `genetic_strata_reducer` | RandomizationStructureBuilder | Генетическое укрупнение страт | реализован |
+| D05 | `prognostic_blocks` | RandomizationStructureBuilder | Блоки по pre-treatment prognostic score | реализован |
+| D06 | `prognostic_score_block_randomization` | ConfigurationProfile | Старое имя профиля; заменено на `prognostic_blocks` + assignment | исключён |
 | O01 | `ab_proportional` | OptimizationObjective | Критерий GA для естественного A/B-трафика | реализован |
 
 GA обучается на pre-experiment target доступного датасета и не является
@@ -173,8 +174,36 @@ GA обучается на pre-experiment target доступного датас
 он не использует prior, но участвует в честной паре сравнений с методами,
 которым prior разрешён.
 
-Декартова расширенная гонка формирует дополнительные IDs вида
-`cartesian__<estimator>__<transformer>`. Это конфигурационно порождённые
-композиции, а не новые фундаментальные методы; полный список конкретного
-запуска хранится в `pipeline_catalog.csv` и на листе `Пайплайны` итогового
-Excel-файла.
+Полное произведение совместимых компонентов формирует канонические ID вида
+`adapt.<id>__structure.<id>__assign.<id>__target.<id>__analysis.<id>`.
+Пайплайны не являются отдельными методами: их матрица хранится в Parquet и на
+листе `Пайплайны` итоговой книги.
+
+## Канонический реестр R&D v3
+
+Пайплайны больше не считаются самостоятельными методами. Их ID строится из
+компонентов, а ниже перечислены новые исполняемые примитивы и неделимые пары
+`point estimator + inference`. Слова `A_plus_B` и `A_plus_B_plus_C` обозначают
+отдельные последовательные стадии внутри каждого семейства CUPAC.
+
+| Категория | ID |
+| --- | --- |
+| Механизм назначения | `complete_randomization`, `stratified_randomization`, `rerandomization_mahalanobis`, `rerandomization_max_smd`, `rerandomization_mixed_balance`, `hypex_aa_best_of_k` |
+| Структура рандомизации | `none`, `atomic_strata`, `prognostic_blocks`, `genetic_strata_reducer` |
+| CUPED | `cuped_historical`, `cuped_huber_historical` |
+| CUPAC Auto-ML | `cupac_automl_A`, `cupac_automl_A_plus_B`, `cupac_automl_A_plus_B_plus_C` |
+| CUPAC linear | `cupac_linear_A`, `cupac_linear_A_plus_B`, `cupac_linear_A_plus_B_plus_C` |
+| CUPAC quadratic | `cupac_quadratic_A`, `cupac_quadratic_A_plus_B`, `cupac_quadratic_A_plus_B_plus_C` |
+| CUPAC panel prior | `panel_prior_cupac_A`, `panel_prior_cupac_A_plus_B`, `panel_prior_cupac_A_plus_B_plus_C` |
+| CUPAC HypEx-compatible | `cupac_hypex_compatible_A`, `cupac_hypex_compatible_A_plus_B`, `cupac_hypex_compatible_A_plus_B_plus_C` |
+| Недоступный target-only HypEx API | `cupac_hypex_official_target_A`, `cupac_hypex_official_target_A_plus_B`, `cupac_hypex_official_target_A_plus_B_plus_C` |
+| Бейзлайн target | `identity` |
+| Разность средних | `diff_means__welch`, `diff_means__student_pooled`, `diff_means__design_based_normal`, `diff_means__welch_studentized_randomization`, `diff_means__bootstrap_t`, `diff_means__sharp_null_randomization` |
+| Регрессионная корректировка | `lin_regression__hc2`, `lin_regression__hc3`, `ml_rate__crossfit_hc2` |
+| HypEx parity | `hypex_ab__integration`, `hypex_cuped__integration`, `hypex_cupac_A__integration`, `hypex_matching_ate__integration` |
+| Стратификация | `stratified_ate__native`, `common_effect_inverse_variance_stratified__native` |
+| Обобщение на популяцию | `population_weighted_stratified_ate__native`, `calibration_weighted_population_ate__native` |
+| Matching ATE | `nearest_neighbor_matching_ate__reuse_aware`, `optimal_transport_matching_ate__point`, `optimal_transport_matching_ate__sharp_null_ri` |
+| Ёжиковые веса | `hedgehog_weighted_ate__native` |
+| Устойчивые native effects | `yuen_trimmed_effect`, `winsorized_effect_bootstrap`, `trimmed_mean__yuen`, `winsorized_mean__full_refit_bootstrap`, `iforest_trimmed_mean__full_refit`, `iforest_winsorized_mean__full_refit` |
+| Устойчивые кандидаты исходного среднего | `median_of_means_ate`, `catoni_mean_ate`, `median_of_means_ate__bootstrap`, `catoni_mean_ate__bootstrap` |

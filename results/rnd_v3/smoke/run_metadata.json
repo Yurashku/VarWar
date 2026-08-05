@@ -1,0 +1,22 @@
+{
+  "config": {
+    "stage": "smoke",
+    "world_ids": [
+      "gaussian_r2_04_n200"
+    ],
+    "effects": [
+      0.0,
+      0.2
+    ],
+    "n_trials": 5,
+    "seed": 20260805,
+    "resamples": 99,
+    "include_hypex_assignment": false,
+    "pipeline_ids": [],
+    "max_executable_pipelines": 28,
+    "fast_only": true
+  },
+  "n_matrix_rows": 762048,
+  "n_executable_rows": 28,
+  "n_trial_rows": 280
+}

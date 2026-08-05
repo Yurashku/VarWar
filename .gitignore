@@ -84,5 +84,12 @@ dmypy.json
 # Microsoft Office lock files
 ~$*
 
+# Local JavaScript runtime and spreadsheet QA artifacts
+node_modules/
+*.inspect.ndjson
+outputs/**/previews/
+results/rnd_v3/smoke/pipeline_matrix.parquet
+results/rnd_v3/screening/pipeline_matrix.parquet
+
 # Local benchmark smoke outputs
 results/pipeline_race_v2_smoke_*/

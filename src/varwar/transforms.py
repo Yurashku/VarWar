@@ -356,7 +356,17 @@ class PanelPriorCupacTransformer:
             )
         if spec.pre_target_col is None:
             raise ValueError("Panel-prior CUPAC requires spec.pre_target_col.")
-        training, prediction = self._resolve_features(data, spec)
+        if self.training_feature_cols is None and self.prediction_feature_cols is None:
+            prior_training = tuple(summary.feature_cols)
+            prior_prediction = tuple(
+                column.removesuffix("__lag2") for column in prior_training
+            )
+            if all(column in data.columns for column in (*prior_training, *prior_prediction)):
+                training, prediction = prior_training, prior_prediction
+            else:
+                training, prediction = self._resolve_features(data, spec)
+        else:
+            training, prediction = self._resolve_features(data, spec)
         require_columns(data, [*training, *prediction, spec.pre_target_col, spec.target_col])
         prior = summary.stats_for(training)
         numeric = data.loc[:, [*training, spec.pre_target_col]].apply(
@@ -498,6 +508,8 @@ class LinearInTimeAdjustmentTransformer:
     feature_cols: tuple[str, ...]
     fit_data: str = "experiment_control"
     ridge: float = 1e-8
+    n_splits: int = 5
+    random_state: int = 42
     name: str = "linear_intime_adjustment"
     _diagnostics: dict[str, Any] = field(default_factory=dict, init=False)
 
@@ -518,20 +530,30 @@ class LinearInTimeAdjustmentTransformer:
         )
         require_columns(fit_frame, [spec.target_col, *self.feature_cols])
         require_columns(data, [spec.target_col, *self.feature_cols])
-        state, valid = _fit_ridge(
-            _as_matrix(fit_frame, self.feature_cols),
-            np.asarray(
-                pd.to_numeric(fit_frame[spec.target_col], errors="coerce"),
-                dtype=float,
-            ),
-            self.ridge,
-        )
-        prediction = state.predict(_as_matrix(data, self.feature_cols))
-        prediction_mean = float(np.nanmean(prediction))
+        if self.fit_data != "experiment_control":
+            raise ValueError("In-time B/C stages must be fitted on experiment control.")
+        matrix = _as_matrix(data, self.feature_cols)
         target = np.asarray(
-            pd.to_numeric(data[spec.target_col], errors="coerce"),
-            dtype=float,
+            pd.to_numeric(data[spec.target_col], errors="coerce"), dtype=float
         )
+        treatment = np.asarray(data[spec.treatment_col])
+        control_positions = np.flatnonzero(treatment == spec.control_value)
+        if control_positions.size < 4:
+            raise ValueError("Cross-fitted in-time adjustment needs four control rows.")
+        prediction = np.full(len(data), np.nan, dtype=float)
+        rng = np.random.default_rng(self.random_state)
+        shuffled = control_positions[rng.permutation(control_positions.size)]
+        folds = np.array_split(shuffled, min(self.n_splits, control_positions.size))
+        fold_fit_rows = 0
+        for fold in folds:
+            train = np.setdiff1d(control_positions, fold, assume_unique=False)
+            state_fold, valid_fold = _fit_ridge(matrix[train], target[train], self.ridge)
+            prediction[fold] = state_fold.predict(matrix[fold])
+            fold_fit_rows += int(valid_fold.sum())
+        state, valid = _fit_ridge(matrix[control_positions], target[control_positions], self.ridge)
+        non_control = np.flatnonzero(treatment != spec.control_value)
+        prediction[non_control] = state.predict(matrix[non_control])
+        prediction_mean = float(np.nanmean(prediction))
         adjusted = target - (prediction - prediction_mean)
         self._diagnostics = {
             "features": ",".join(self.feature_cols),
@@ -543,6 +565,10 @@ class LinearInTimeAdjustmentTransformer:
             "prediction_variance": float(np.nanvar(prediction, ddof=1)),
             "prediction_center": prediction_mean,
             "current_outcome_used_for_model_fit": True,
+            "cross_fitted_control_predictions": True,
+            "cross_fit_splits": len(folds),
+            "cross_fit_total_training_rows": fold_fit_rows,
+            "random_state": self.random_state,
         }
         return pd.Series(adjusted, index=data.index, name=f"{spec.target_col}_{self.name}")
 

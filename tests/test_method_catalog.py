@@ -36,18 +36,18 @@ class MethodCatalogTests(unittest.TestCase):
     def test_selected_article_candidates_have_correct_roles(self) -> None:
         nonlinear = get_method_record("nonlinear_cupac")
         self.assertEqual(nonlinear.category, MethodCategory.TARGET_TRANSFORMER)
-        self.assertEqual(nonlinear.status, MethodStatus.PLACEHOLDER_RND)
+        self.assertEqual(nonlinear.status, MethodStatus.IMPLEMENTED)
 
         randomization = get_method_record("prognostic_score_block_randomization")
         self.assertEqual(
             randomization.category,
-            MethodCategory.DESIGN_PREPROCESSOR,
+            MethodCategory.RANDOMIZATION_STRUCTURE_BUILDER,
         )
-        self.assertEqual(randomization.status, MethodStatus.PLACEHOLDER_RND)
+        self.assertEqual(randomization.status, MethodStatus.IMPLEMENTED)
 
         ratio = get_method_record("ratio_linearization")
         self.assertEqual(ratio.category, MethodCategory.METRIC_TRANSFORMER)
-        self.assertEqual(ratio.status, MethodStatus.PLACEHOLDER_RND)
+        self.assertEqual(ratio.status, MethodStatus.EXCLUDED)
 
     def test_all_placeholder_registries_are_non_executable_and_cataloged(self) -> None:
         data = pd.DataFrame({"treatment": [], "y": []})
