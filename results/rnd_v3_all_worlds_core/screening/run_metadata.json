@@ -1,0 +1,14 @@
+{
+  "stage": "screening",
+  "shards": [
+    "results\\rnd_v3_all_worlds_core\\shard_1\\screening",
+    "results\\rnd_v3_all_worlds_core\\shard_2\\screening",
+    "results\\rnd_v3_all_worlds_core\\shard_3\\screening",
+    "results\\rnd_v3_all_worlds_core\\shard_4\\screening"
+  ],
+  "n_matrix_rows": 762048,
+  "n_trial_rows": 288000,
+  "n_aggregate_rows": 960,
+  "n_worlds": 24,
+  "n_pipelines": 5
+}

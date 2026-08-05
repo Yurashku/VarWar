@@ -58,6 +58,12 @@ class RNDRunnerTests(unittest.TestCase):
             )
             self.assertTrue(artifacts.leaders.empty)
             self.assertTrue((artifacts.output_dir / "trial_results.parquet").exists())
+            paired_seeds = artifacts.trial_results.groupby("trial")["seed"].nunique()
+            self.assertTrue(paired_seeds.eq(1).all())
+            self.assertEqual(
+                artifacts.trial_results.groupby("trial")["seed"].first().nunique(),
+                2,
+            )
 
     def test_pipeline_uses_worst_target_and_analysis_safety(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
