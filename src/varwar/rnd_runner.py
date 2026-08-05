@@ -586,11 +586,19 @@ def run_rnd(
     matrix_frame.to_parquet(output / "pipeline_matrix.parquet", index=False)
     executable = _execution_rows(matrix, config)
     records: list[dict[str, Any]] = []
-    child_seeds = iter(seed_sequence.spawn(len(config.world_ids) * len(config.effects) * config.n_trials))
-    for world_id in config.world_ids:
+    world_trial_seeds = np.asarray(
+        [
+            int(child.generate_state(1, dtype=np.uint64)[0])
+            for child in seed_sequence.spawn(len(config.world_ids) * config.n_trials)
+        ],
+        dtype=np.uint64,
+    ).reshape(len(config.world_ids), config.n_trials)
+    for world_index, world_id in enumerate(config.world_ids):
         for effect in config.effects:
             for trial in range(config.n_trials):
-                seed = int(next(child_seeds).generate_state(1, dtype=np.uint64)[0])
+                # H0 and all H1 effect sizes share the same finite population,
+                # cohort and assignment for a given Monte Carlo replication.
+                seed = int(world_trial_seeds[world_index, trial])
                 world_spec = replace(get_world_spec(world_id), effect=effect)
                 world = generate_world(world_spec, seed=seed)
                 prior = _panel_prior(world)
