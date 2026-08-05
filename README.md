@@ -1,110 +1,92 @@
 # VarWar
 
-VarWar is an R&D workspace for comparing A/B test estimators and variance
-reduction wrappers. The old CUPED/CUPAC notebooks are preserved under
-`legacy/`; the active project is now a small Python package with synthetic
-benchmarks, composable estimators, and agent-facing instructions.
+VarWar - исследовательский стенд для сравнения **полных процедур анализа
+рандомизированных экспериментов** на синтетике с известной истиной. Старые
+прототипы сохранены в `legacy/`; активный код разделяет построение структуры
+рандомизации, назначение воздействия, преобразование target и согласованную
+пару «точечная оценка + статистический вывод».
 
-## What Is Implemented
+## Что реализовано
 
-- Canonical statistical baseline: closed-form Welch t-test
-  `welch_mean_diff`.
-- Integration/parity A/B baseline backed by the PyPI `hypex` package:
-  `hypex_ab`.
-- HypEx integration baselines: `hypex_cuped` and
-  `hypex_cupac_temporal`.
-- Local same-dataset adjustment pipelines: `cuped_control__hypex_ab`,
-  `cupac_linear_A__hypex_ab`, `cupac_linear_A_plus_B__hypex_ab`, and
-  `cupac_linear_A_plus_B_plus_C__hypex_ab`.
-- Native estimators/tests: Welch and pooled t-tests, KS test,
-  fast approximate KS, energy-distance test, randomized/hedgehog t-test,
-  permutation mean test, regression adjustment, ML-rate-style cross-fitted
-  adjustment, nearest-neighbor matching, ratio delta method, stratified and
-  variance-weighted summaries, robust trimmed/winsorized summaries, and
-  Wald/LATE.
-- Multiple-testing helpers: Bonferroni, Holm-Bonferroni, and Romano-Wolf
-  step-down over caller-supplied bootstrap statistics.
-- Design preprocessing: memory-efficient numeric feature binning and genetic
-  reduction of atomic category combinations with the A/B-proportional
-  variance objective.
-- Honest placeholders for methods that need a separate implementation pass:
-  anti-nuclear KS, HypEx matcher, calibration/reweighting,
-  optimal-transport matching and homogeneity testing, Bayesian CUPAC, and
-  prognostic-score block randomization.
+- Механизмы назначения: полная и стратифицированная рандомизация,
+  rerandomization по Mahalanobis, max-SMD и mixed balance, а также интеграция
+  с `HypEx.AATest`.
+- Структуры рандомизации: атомарные страты, prognostic-score blocks и
+  генетическое укрупнение страт.
+- Анализ среднего эффекта: Welch и pooled Student, design-based normal,
+  studentized permutation, bootstrap-t, Lin HC2/HC3, ML-RATE, стратифицированные
+  оценки, calibration weighting, nearest-neighbor и optimal-transport ATE.
+- Преобразования: historical и Huber CUPED; linear, quadratic, Auto-ML,
+  panel-prior и HypEx-compatible CUPAC в вариантах A, A+B и A+B+C.
+- Устойчивые дорожки: Yuen trimmed effect, winsorized effect, median-of-means,
+  Catoni и чувствительность к Isolation Forest.
+- Интеграционные бейзлайны PyPI `hypex==1.0.6`: AB, CUPED, CUPAC и Matching.
+- Численная проверка по известной истине: bias, RMSE, empirical SD, SE/SD,
+  FPR с интервалом Wilson, super-uniformity p-value, coverage, power, ошибка
+  второго рода, MDE, время и RSS-память.
 
-## Quick Start
+## Быстрый запуск
 
 ```bash
-python -m pip install -e ".[dev]"
-python -m unittest discover -s tests
-python examples/run_synthetic_race.py
-python examples/run_pipeline_race_v2.py --trials 10 --output-dir results/smoke
-python examples/run_stratification_race.py
-python examples/run_stratification_simulation.py --trials 10
+python -m pip install -e ".[dev,ml]"
+python -m unittest discover -s tests -v
+python examples/run_rnd_v3.py --stage smoke
+powershell -File examples/build_rnd_v3_workbook.ps1
 ```
 
-Актуальный отчёт полной синтетической гонки находится в
-[`results/pipeline_race_v2/report_ru.md`](results/pipeline_race_v2/report_ru.md).
-Переработанный Excel-каталог с листами методов, пайплайнов, результатов и
-сверки со старой таблицей:
-[`outputs/varwar-methods-20260724/VarWar_methods_and_pipeline_race.xlsx`](outputs/varwar-methods-20260724/VarWar_methods_and_pipeline_race.xlsx).
-Запуск с `--trials` без `--output-dir` пишет в отдельный каталог
-`results/pipeline_race_v2_smoke_<N>` и не перезаписывает канонический отчёт.
+Smoke проверяет исполнение и не создаёт научный рейтинг. Screening требует не
+менее 200 общих реализаций, confirmation - новых seed и 1000 реализаций для
+финалистов. Полные trial-level результаты сохраняются в Parquet; Excel содержит
+компактные агрегаты, диагностику и фильтруемый дашборд.
 
-## Project Layout
-
-- `src/varwar/` - estimators, target transformers, design preprocessors,
-  feature adapters, synthetic data, and benchmark runners.
-- `tests/` - lightweight regression tests based on `unittest`.
-- `examples/` - user-facing scripts for synthetic races.
-- `configs/` - benchmark defaults.
-- `docs/methods/` - current Russian method catalog and detailed documentation.
-- `docs/` - R&D plan and historical worksheet mappings.
-- `legacy/` - previous notebooks and prototype files, kept for context only.
-
-## Design Notes
-
-Estimators and wrappers are separate concepts. A base estimator summarizes an
-experiment outcome, while a wrapper transforms the target first and then
-delegates to a base estimator. This lets CUPED and CUPAC turn the same HypEx
-A/B baseline into new race participants without duplicating inference code.
-
-Design preprocessing is evaluated in a separate race because it changes the
-experiment design rather than directly estimating an effect. See
-`docs/methods/README.md` for the taxonomy and `docs/methods/all_methods.md` for
-the complete method/status registry.
-
-The current `hypex_ab` implementation is a native compatibility adapter for the
-HypEx A/B baseline slot. It first tries the PyPI `hypex` package, then falls
-back to the local Welch-compatible implementation when HypEx is unavailable in
-the runtime. Canonical pipeline-race definitions set `require_pypi=True`, so a
-failed HypEx integration becomes an explicit failed row instead of a silent
-fallback. The adapter can also be wired to a concrete callable:
-
-```bash
-export VARWAR_HYPEX_BACKEND="my_project.hypex_backend:estimate"
-```
-
-The backend callable should accept `(data, spec)` and return `EstimateResult`.
-Where a mature library function is both clear and efficient, VarWar uses it,
-for example SciPy for t/KS p-values when SciPy is installed.
-
-The local CUPAC chain uses the following data-zone contract:
+## Архитектура гонки
 
 ```text
-A = temporal CUPAC on pre-treatment lag2 -> lag1 data
-B = a separate control-fitted linear adjustment on expert-safe in-time features
-C = a separate control-fitted linear adjustment after safety and balance gates
+FeatureAdapter
+-> RandomizationStructureBuilder
+-> AssignmentMechanism
+-> TargetTransformer
+-> AnalysisMethod(PointEstimator + InferenceProcedure + contract)
 ```
 
-The chain is trained from the one available experiment dataset: current
-outcome is never used to train stage A; stages B and C are fitted only on the
-current control. `hypex_cupac_temporal` remains an integration/parity row, not
-a predecessor in the local chain:
+Канонический ID процедуры:
 
 ```text
-hypex_ab
-  -> cupac_linear_A__hypex_ab
-  -> cupac_linear_A_plus_B__hypex_ab
-  -> cupac_linear_A_plus_B_plus_C__hypex_ab
+adapt.<id>__structure.<id>__assign.<id>__target.<id>__analysis.<id>
 ```
+
+Гонка разделена по estimand и по двум независимым измерениям доступа:
+
+- `experiment_only` или `panel_prior`;
+- `pre_treatment_only` или `full_timeline` (`pre + in-time + post`).
+
+Методы A+B и A+B+C запускаются в общей матрице, но явно отмечаются как
+`conditional` или `post_treatment_risk`. Несопоставимые estimand никогда не
+ранжируются вместе. Для trimming/winsorization отдельно показываются качество
+оценки собственного функционала и смещение относительно исходного ATE.
+
+## Навигация
+
+- [Каталог и терминология](docs/methods/README.md)
+- [Полный реестр методов](docs/methods/all_methods.md)
+- [Научный дизайн R&D](docs/methods/scientific_rnd_design.md)
+- [Численная проверка статистического вывода](docs/methods/statistical_validation.md)
+- [CUPED/CUPAC и временные зоны](docs/methods/target_transformers.md)
+- [Генетическое укрупнение страт](docs/methods/genetic_strata_reducer.md)
+- [Panel prior](docs/methods/panel_prior.md)
+
+Основной пакет находится в `src/varwar/`, пользовательские команды - в
+`examples/`, тесты - в `tests/`, прежние материалы - в `legacy/`.
+
+## Канонические результаты
+
+- `results/rnd_v3/smoke/` - техническая проверка 28 маршрутов, без рейтинга.
+- `results/rnd_v3/screening/` - 200 реализаций утверждённого ядра на первом
+  Gaussian-мире.
+- `results/rnd_v3/confirmation/` - независимые 1000 реализаций пяти
+  финалистов; подробный русский отчёт находится в `report_ru.md`.
+- `outputs/rnd-v3/VarWar_RnD_v3.xlsx` - фильтруемый Excel по confirmation.
+
+Текущий confirmation подтверждает только мир `gaussian_r2_04_n200`. Он не
+заменяет будущую confirmation по тяжёлым хвостам, нелинейности, temporal leakage,
+population shift и prior mismatch.

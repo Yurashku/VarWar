@@ -1,0 +1,29 @@
+{
+  "config": {
+    "stage": "confirmation",
+    "world_ids": [
+      "gaussian_r2_04_n200"
+    ],
+    "effects": [
+      0.0,
+      0.1,
+      0.2
+    ],
+    "n_trials": 1000,
+    "seed": 20260807,
+    "resamples": 99,
+    "include_hypex_assignment": false,
+    "pipeline_ids": [
+      "adapt.identity__structure.none__assign.complete_randomization__target.identity__analysis.diff_means__welch",
+      "adapt.identity__structure.none__assign.complete_randomization__target.identity__analysis.lin_regression__hc2",
+      "adapt.identity__structure.none__assign.complete_randomization__target.identity__analysis.ml_rate__crossfit_hc2",
+      "adapt.identity__structure.none__assign.complete_randomization__target.cuped_historical__analysis.diff_means__welch",
+      "adapt.identity__structure.none__assign.complete_randomization__target.cupac_linear_A__analysis.diff_means__welch"
+    ],
+    "max_executable_pipelines": null,
+    "fast_only": false
+  },
+  "n_matrix_rows": 762048,
+  "n_executable_rows": 20,
+  "n_trial_rows": 60000
+}

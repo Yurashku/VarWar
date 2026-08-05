@@ -101,6 +101,46 @@ from varwar.stratification import (
     aggregate_atomic_strata,
     canonicalize_partition,
 )
+from varwar.analysis import (
+    AnalysisMethod,
+    AnalysisResult,
+    CausalSafety,
+    CompatibilityContract,
+    InformationMode,
+    InferenceQuality,
+    PipelineStatus,
+    RaceContext,
+    TemporalAccess,
+    TheoryGrade,
+)
+from varwar.assignment import (
+    CompleteRandomization,
+    HypExAABestOfK,
+    RerandomizationMahalanobis,
+    RerandomizationMaxSMD,
+    RerandomizationMixedBalance,
+    StratifiedRandomization,
+)
+from varwar.advanced_transforms import (
+    AutoMLTemporalCupacTransformer,
+    RobustHistoricalCupedTransformer,
+)
+from varwar.randomization_structure import PrognosticScoreBlockBuilder
+from varwar.rnd_runner import (
+    RNDArtifacts,
+    RNDRunConfig,
+    confirmation_pipeline_ids,
+    profile_rnd_peak_rss,
+    run_rnd,
+)
+from varwar.robust_estimators import (
+    CatoniMeanEstimator,
+    FullRefitWinsorizedMeanEstimator,
+    IsolationForestSensitivityEstimator,
+    MedianOfMeansEstimator,
+    YuenTrimmedMeanEstimator,
+)
+from varwar.target_registry import TARGET_REGISTRY, TargetTransformDefinition
 
 __all__ = [
     "ExperimentSpec",
@@ -186,4 +226,35 @@ __all__ = [
     "run_estimator_race",
     "run_stratification_race",
     "summarize_stratification_trials",
+    "AnalysisMethod",
+    "AnalysisResult",
+    "CompatibilityContract",
+    "RaceContext",
+    "TheoryGrade",
+    "CausalSafety",
+    "InformationMode",
+    "TemporalAccess",
+    "PipelineStatus",
+    "InferenceQuality",
+    "CompleteRandomization",
+    "StratifiedRandomization",
+    "RerandomizationMahalanobis",
+    "RerandomizationMaxSMD",
+    "RerandomizationMixedBalance",
+    "HypExAABestOfK",
+    "PrognosticScoreBlockBuilder",
+    "AutoMLTemporalCupacTransformer",
+    "RobustHistoricalCupedTransformer",
+    "YuenTrimmedMeanEstimator",
+    "FullRefitWinsorizedMeanEstimator",
+    "IsolationForestSensitivityEstimator",
+    "MedianOfMeansEstimator",
+    "CatoniMeanEstimator",
+    "TargetTransformDefinition",
+    "TARGET_REGISTRY",
+    "RNDRunConfig",
+    "RNDArtifacts",
+    "run_rnd",
+    "profile_rnd_peak_rss",
+    "confirmation_pipeline_ids",
 ]

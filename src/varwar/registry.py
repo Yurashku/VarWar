@@ -46,11 +46,6 @@ from varwar.transforms import (
 def placeholder_estimators() -> list[PlaceholderEstimator]:
     return [
         PlaceholderEstimator(
-            "anti_nuclear_ks_test",
-            "needs a treatment-blind de-tying rule, scale rule, and "
-            "permutation-calibrated null distribution",
-        ),
-        PlaceholderEstimator(
             "optimal_transport_check",
             "excluded because no unique statistic or decision rule is defined",
         ),
@@ -69,16 +64,6 @@ def placeholder_target_transformers() -> list[PlaceholderTargetTransformer]:
         PlaceholderTargetTransformer(
             "bayesian_cupac",
             "needs a Bayesian model and posterior decision rule",
-        ),
-        PlaceholderTargetTransformer(
-            "nonlinear_cupac",
-            "needs a temporal same-dataset training contract, tuning policy, "
-            "and a resource-bounded model family beyond quadratic features",
-        ),
-        PlaceholderTargetTransformer(
-            "robust_cuped",
-            "needs a robust coefficient estimator, centering policy, "
-            "honest fit contract, and valid inference tests",
         ),
         PlaceholderTargetTransformer(
             "trimming",
@@ -103,13 +88,7 @@ def placeholder_metric_transformers() -> list[PlaceholderMetricTransformer]:
 def placeholder_design_preprocessors() -> list[PlaceholderDesignPreprocessor]:
     """Return experiment-design candidates kept outside estimator races."""
 
-    return [
-        PlaceholderDesignPreprocessor(
-            "prognostic_score_block_randomization",
-            "needs a randomized block-construction and assignment contract, "
-            "allocation ratios, and matching randomization-aware inference",
-        )
-    ]
+    return []
 
 
 def default_estimators(

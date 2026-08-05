@@ -64,10 +64,12 @@ def _robust_covariance(
     leverage = np.einsum("ij,jk,ik->i", design, inverse, design)
     if kind == "HC2":
         omega = residuals**2 / np.maximum(1.0 - leverage, 1e-12)
+    elif kind == "HC3":
+        omega = residuals**2 / np.maximum((1.0 - leverage) ** 2, 1e-12)
     elif kind == "HC1":
         omega = residuals**2 * design.shape[0] / max(design.shape[0] - design.shape[1], 1)
     else:
-        raise ValueError("kind must be HC1 or HC2.")
+        raise ValueError("kind must be HC1, HC2 or HC3.")
     return inverse @ (design.T @ (omega[:, None] * design)) @ inverse
 
 
@@ -227,6 +229,7 @@ class RegressionAdjustmentEstimator:
 
     name: str = "regression_adjustment"
     include_pre_target: bool = True
+    covariance_type: str = "HC2"
 
     def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
         features = list(spec.pre_treatment_features())
@@ -254,7 +257,9 @@ class RegressionAdjustmentEstimator:
         beta, *_ = np.linalg.lstsq(x, y, rcond=None)
         residuals = y - x @ beta
         n, p = x.shape
-        cov = _robust_covariance(x, residuals, "HC2")
+        if self.covariance_type not in {"HC2", "HC3"}:
+            raise ValueError("covariance_type must be HC2 or HC3.")
+        cov = _robust_covariance(x, residuals, self.covariance_type)
         effect = float(beta[1])
         se = math.sqrt(max(float(cov[1, 1]), 0.0))
         n_control = int(((np.asarray(data[spec.treatment_col]) == spec.control_value) & valid).sum())
@@ -269,7 +274,7 @@ class RegressionAdjustmentEstimator:
             spec.alpha,
             {
                 "features": ",".join(features),
-                "se": "HC2",
+                "se": self.covariance_type,
                 "interactions": True,
                 "covariates_centered": True,
             },
@@ -1342,6 +1347,37 @@ def _nearest_neighbor_indices(
         return result
 
 
+def _matching_weight_variance(values: np.ndarray, weights: np.ndarray) -> float:
+    """Estimate a weighted-mean variance while retaining match reuse.
+
+    The normalized weights may be non-uniform because one unit can be reused as
+    another unit's nearest neighbour.  Treating matched differences as
+    independent loses that information.  This HC-style linear-weight variance
+    is an Abadie-Imbens-like finite-sample approximation conditional on the
+    covariates and the selected matches; it is not the exact Abadie-Imbens
+    bias-corrected variance estimator.
+    """
+
+    values = np.asarray(values, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    if values.ndim != 1 or weights.shape != values.shape:
+        raise ValueError(
+            "Matching values and weights must be one-dimensional and aligned."
+        )
+    total = float(weights.sum())
+    if not math.isfinite(total) or total <= 0.0:
+        raise ValueError("Matching weights must have a positive finite sum.")
+    normalized = weights / total
+    mean = float(np.dot(normalized, values))
+    squared_weight_sum = float(np.dot(normalized, normalized))
+    correction = 1.0 - squared_weight_sum
+    if correction <= 0.0:
+        return math.nan
+    return float(
+        np.dot(normalized**2, (values - mean) ** 2) / correction
+    )
+
+
 @dataclass
 class RatioDeltaMethodEstimator:
     name: str = "ratio_delta"
@@ -1779,34 +1815,6 @@ class NearestNeighborMatchingEstimator:
     def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
         if self.estimand not in {"att", "ate"}:
             raise ValueError("NearestNeighborMatchingEstimator estimand must be 'att' or 'ate'.")
-        if self.estimand == "ate":
-            treated = self.__class__(name=self.name, chunk_size=self.chunk_size, estimand="att").estimate(data, spec)
-            reversed_spec = replace(spec, control_value=spec.treatment_value, treatment_value=spec.control_value)
-            control = self.__class__(name=self.name, chunk_size=self.chunk_size, estimand="att").estimate(data, reversed_spec)
-            n_total = treated.n_treatment + treated.n_control
-            weight_t = treated.n_treatment / n_total
-            weight_c = treated.n_control / n_total
-            effect = weight_t * treated.effect + weight_c * control.effect
-            se = math.sqrt((weight_t * treated.standard_error) ** 2 + (weight_c * control.standard_error) ** 2)
-            return EstimateResult(
-                estimator=self.name,
-                effect=effect,
-                standard_error=se,
-                statistic=safe_divide(effect, se),
-                p_value=t_two_sided_p(safe_divide(effect, se), max(n_total - 2, 1)),
-                ci_low=effect - t_critical(spec.alpha, max(n_total - 2, 1)) * se,
-                ci_high=effect + t_critical(spec.alpha, max(n_total - 2, 1)) * se,
-                n_control=treated.n_control,
-                n_treatment=treated.n_treatment,
-                diagnostics={
-                    "estimand": "ATE",
-                    "matching_mode": "symmetric_imputation",
-                    "att_effect": treated.effect,
-                    "atc_effect": control.effect,
-                    "att_standard_error": treated.standard_error,
-                    "atc_standard_error": control.standard_error,
-                },
-            )
         features = tuple(spec.pre_treatment_features())
         require_columns(data, [spec.treatment_col, spec.target_col, *features])
         if not features:
@@ -1829,17 +1837,91 @@ class NearestNeighborMatchingEstimator:
         scale = np.where(scale > 0.0, scale, 1.0)
         x_control = (x_control - center) / scale
         x_treatment = (x_treatment - center) / scale
-        match_index = _nearest_neighbor_indices(x_treatment, x_control, self.chunk_size)
-        matched_y = y_control[match_index]
+        treatment_to_control = _nearest_neighbor_indices(
+            x_treatment, x_control, self.chunk_size
+        )
+        control_reuse = np.bincount(
+            treatment_to_control, minlength=y_control.size
+        ).astype(float)
+
+        if self.estimand == "ate":
+            control_to_treatment = _nearest_neighbor_indices(
+                x_control, x_treatment, self.chunk_size
+            )
+            treatment_reuse = np.bincount(
+                control_to_treatment, minlength=y_treatment.size
+            ).astype(float)
+            treatment_weights = 1.0 + treatment_reuse
+            control_weights = 1.0 + control_reuse
+            treatment_weights /= treatment_weights.sum()
+            control_weights /= control_weights.sum()
+            effect = float(
+                np.dot(treatment_weights, y_treatment)
+                - np.dot(control_weights, y_control)
+            )
+            variance = _matching_weight_variance(
+                y_treatment, treatment_weights
+            ) + _matching_weight_variance(y_control, control_weights)
+            se = math.sqrt(variance) if variance >= 0.0 else math.nan
+            n_total = int(y_treatment.size + y_control.size)
+            att_effect = float(
+                np.mean(y_treatment - y_control[treatment_to_control])
+            )
+            atc_effect = float(
+                np.mean(y_treatment[control_to_treatment] - y_control)
+            )
+            diagnostics = {
+                "estimand": "ATE",
+                "matching_mode": "symmetric_imputation",
+                "features": ",".join(features),
+                "att_effect": att_effect,
+                "atc_effect": atc_effect,
+                "unique_controls": int(np.count_nonzero(control_reuse)),
+                "unique_treatments": int(np.count_nonzero(treatment_reuse)),
+                "max_control_reuse": int(control_reuse.max(initial=0.0)),
+                "max_treatment_reuse": int(treatment_reuse.max(initial=0.0)),
+                "inference": "reuse_aware_linear_weight_sandwich",
+                "inference_scope": "conditional_on_covariates_and_matches",
+                "variance_family": "abadie_imbens_like_not_exact_bias_corrected",
+                "inference_quality": "approximate",
+                "bias_correction": False,
+                "att_atc_se_combination": "not_used_joint_linear_weights",
+            }
+            return _build_result(
+                self.name,
+                effect,
+                se,
+                float(max(n_total - 2, 1)),
+                int(y_control.size),
+                int(y_treatment.size),
+                spec.alpha,
+                diagnostics,
+            )
+
+        matched_y = y_control[treatment_to_control]
         diffs = y_treatment - matched_y
         n_pairs = int(diffs.size)
-        effect = float(diffs.mean())
-        se = float(diffs.std(ddof=1) / math.sqrt(n_pairs))
+        treatment_weights = np.full(y_treatment.size, 1.0 / y_treatment.size)
+        control_weights = control_reuse / control_reuse.sum()
+        effect = float(
+            np.dot(treatment_weights, y_treatment)
+            - np.dot(control_weights, y_control)
+        )
+        variance = _matching_weight_variance(
+            y_treatment, treatment_weights
+        ) + _matching_weight_variance(y_control, control_weights)
+        se = math.sqrt(variance) if variance >= 0.0 else math.nan
         diagnostics = {
             "estimand": "ATT",
             "features": ",".join(features),
             "matched_pairs": n_pairs,
-            "unique_controls": int(np.unique(match_index).size),
+            "unique_controls": int(np.count_nonzero(control_reuse)),
+            "max_control_reuse": int(control_reuse.max(initial=0.0)),
+            "inference": "reuse_aware_linear_weight_sandwich",
+            "inference_scope": "conditional_on_covariates_and_matches",
+            "variance_family": "abadie_imbens_like_not_exact_bias_corrected",
+            "inference_quality": "approximate",
+            "bias_correction": False,
         }
         return _build_result(
             self.name,
@@ -2013,25 +2095,36 @@ class OptimalTransportMatchingEstimator:
             n_total = treated.n_treatment + treated.n_control
             weight_t = treated.n_treatment / n_total
             weight_c = treated.n_control / n_total
-            effect = weight_t * treated.effect + weight_c * control.effect
-            se = math.sqrt((weight_t * treated.standard_error) ** 2 + (weight_c * control.standard_error) ** 2)
+            atc_effect = -control.effect
+            effect = weight_t * treated.effect + weight_c * atc_effect
             return EstimateResult(
                 estimator=self.name,
                 effect=effect,
-                standard_error=se,
-                statistic=safe_divide(effect, se),
-                p_value=t_two_sided_p(safe_divide(effect, se), max(n_total - 2, 1)),
-                ci_low=effect - t_critical(spec.alpha, max(n_total - 2, 1)) * se,
-                ci_high=effect + t_critical(spec.alpha, max(n_total - 2, 1)) * se,
+                standard_error=math.nan,
+                statistic=math.nan,
+                p_value=math.nan,
+                ci_low=math.nan,
+                ci_high=math.nan,
                 n_control=treated.n_control,
                 n_treatment=treated.n_treatment,
                 diagnostics={
                     "estimand": "ATE",
                     "matching_mode": "symmetric_transport_imputation",
                     "att_effect": treated.effect,
-                    "atc_effect": control.effect,
+                    "atc_effect": atc_effect,
                     "att_standard_error": treated.standard_error,
                     "atc_standard_error": control.standard_error,
+                    "inference": "point_only",
+                    "inference_reason": (
+                        "ATT and ATC are dependent and no justified general-ATE "
+                        "variance for the fitted transport plan is available."
+                    ),
+                    "required_for_inference": (
+                        "assignment-replay randomization inference under a sharp "
+                        "constant-effect null"
+                    ),
+                    "constant_effect_assumption": False,
+                    "transport_plan_uncertainty_accounted": False,
                 },
             )
         features = tuple(spec.pre_treatment_features())

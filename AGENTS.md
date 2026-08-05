@@ -21,10 +21,8 @@ compared on synthetic data now and on internal real data later.
   and fixed seeds.
 - If an estimator is not understood well enough, add a documented placeholder
   instead of inventing a fake implementation.
-- Keep estimators, hypothesis tests, metric transformers, target transformers,
-  design preprocessors, feature adapters, inference corrections, configuration
-  profiles, optimization objectives, and composite pipelines distinct in public
-  APIs and benchmark output.
+- Keep assignment mechanisms, randomization-structure builders, feature
+  adapters, target transformers and registered `AnalysisMethod` pairs distinct.
 - Keep every public method ID and maturity status in `varwar.method_catalog`.
   Update `docs/methods/all_methods.md` in the same change.
 - Use category-specific non-executable placeholders. Never register a target
@@ -32,14 +30,18 @@ compared on synthetic data now and on internal real data later.
 
 ## Architecture
 
-- Base estimators implement `estimate(data, spec) -> EstimateResult`.
+- The canonical race unit is `AnalysisMethod = PointEstimator +
+  InferenceProcedure + CompatibilityContract`; do not form a free Cartesian
+  product of estimators and inference procedures.
 - Target wrappers implement `fit_transform(data, spec, auxiliary_data=None)`.
   Primary race pipelines must work from one available experiment dataset;
   `auxiliary_data` is an explicit opt-in compatibility path, never an implicit
   default.
-- `WrappedEstimator` composes a target wrapper with any base estimator.
-- `GeneticStrataReducer` is a `DesignPreprocessor`; benchmark it with
-  `run_stratification_race`, not as a standalone estimator.
+- `WrappedEstimator` is legacy-only. New resampling must refit the complete
+  target chain through `TransformingPointEvaluator`.
+- `GeneticStrataReducer` is a `RandomizationStructureBuilder`; benchmark it
+  either in the dedicated stratification race or as the structure component of
+  a complete v3 procedure, never as a standalone estimator.
 - `NumericFeatureBinner` is a target-free `FeatureAdapter`. Fit its boundaries
   on reference data and reuse them unchanged on experiment data.
 - The default race must include `welch`, `hypex_ab`, `hypex_cuped`,
@@ -63,6 +65,7 @@ python -m unittest discover -s tests
 python examples/run_synthetic_race.py
 python examples/run_stratification_race.py
 python examples/run_pipeline_race_v2.py --trials 5 --output-dir results/smoke/pipeline_race_v2
+python examples/run_rnd_v3.py --stage smoke
 ```
 
 When adding a method, add a synthetic scenario that can fail if the estimator is
