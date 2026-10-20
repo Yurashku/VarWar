@@ -1,0 +1,30 @@
+# VarWar R&D v3.1 — список пайплайнов стадии S1 screening (план §D.1).
+# Использование: examples/run_rnd_v3.py --stage screening --pipelines-file этот_файл
+# Каждый ID исполняется во всех совместимых контекстах (режим информации ×
+# временной доступ × estimand); несовместимые сочетания отсекает матрица.
+
+# Якорь и Lin / ML-RATE (полная рандомизация, без преобразования target)
+adapt.identity__structure.none__assign.complete_randomization__target.identity__analysis.diff_means__welch
+adapt.identity__structure.none__assign.complete_randomization__target.identity__analysis.lin_regression__hc2
+adapt.identity__structure.none__assign.complete_randomization__target.identity__analysis.lin_regression__hc3
+adapt.identity__structure.none__assign.complete_randomization__target.identity__analysis.ml_rate__crossfit_hc2
+adapt.identity__structure.none__assign.complete_randomization__target.identity__analysis.ml_rate__crossfit_gbm_hc2
+
+# PATE-трек (estimand population_ate): Lin с PATE-поправкой
+adapt.identity__structure.none__assign.complete_randomization__target.identity__analysis.lin_regression__hc2_pate
+
+# CUPED / CUPAC: исторический коэффициент и pooled-theta по эксперименту
+adapt.identity__structure.none__assign.complete_randomization__target.cuped_historical__analysis.diff_means__welch
+adapt.identity__structure.none__assign.complete_randomization__target.cuped_pooled_theta__analysis.diff_means__welch
+adapt.identity__structure.none__assign.complete_randomization__target.cupac_linear_A__analysis.diff_means__welch
+adapt.identity__structure.none__assign.complete_randomization__target.cupac_linear_pooled_theta_A__analysis.diff_means__welch
+adapt.identity__structure.none__assign.complete_randomization__target.panel_prior_cupac_A__analysis.diff_means__welch
+
+# In-time стадии B и C (только full_timeline, ранжируются отдельно)
+adapt.identity__structure.none__assign.complete_randomization__target.cupac_linear_A_plus_B__analysis.diff_means__welch
+adapt.identity__structure.none__assign.complete_randomization__target.cupac_linear_A_plus_B_plus_C__analysis.diff_means__welch
+
+# Стратифицированный дизайн (many_rare_strata) и популяционные веса
+adapt.identity__structure.atomic_strata__assign.stratified_randomization__target.identity__analysis.stratified_ate__native
+adapt.identity__structure.genetic_strata__assign.stratified_randomization__target.identity__analysis.stratified_ate__native
+adapt.identity__structure.atomic_strata__assign.stratified_randomization__target.identity__analysis.population_weighted_stratified_ate__native

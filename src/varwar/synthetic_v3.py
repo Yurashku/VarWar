@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Mapping
+from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
@@ -56,6 +56,13 @@ class SyntheticWorldSpec:
     zone_b_mode: str = "safe"
     zone_c_mode: str = "safe"
     many_rare_strata: bool = False
+    effect_modifier_centering: str = "population"
+    outcome_process: str = "static"
+    unit_effect_share: float = 0.0
+    effect_modifier_source: str = "x1_x3"
+    effect_modifier_scale: float = 0.35
+    treated_noise_scale: float = 1.0
+    noise_in_covariates: bool = False
 
     def __post_init__(self) -> None:
         if not self.world_id:
@@ -84,6 +91,35 @@ class SyntheticWorldSpec:
             raise ValueError("Unknown zone_b_mode.")
         if self.zone_c_mode not in {"safe", "treatment_dependent", "outcome_proxy"}:
             raise ValueError("Unknown zone_c_mode.")
+        if self.effect_modifier_centering not in {"population", "cohort"}:
+            raise ValueError("effect_modifier_centering must be 'population' or 'cohort'.")
+        if self.outcome_process not in {"static", "panel"}:
+            raise ValueError("outcome_process must be 'static' or 'panel'.")
+        if self.effect_modifier_source not in {"x1_x3", "prognostic"}:
+            raise ValueError("effect_modifier_source must be 'x1_x3' or 'prognostic'.")
+        if not math.isfinite(self.effect_modifier_scale):
+            raise ValueError("effect_modifier_scale must be finite.")
+        if not (math.isfinite(self.treated_noise_scale) and self.treated_noise_scale > 0.0):
+            raise ValueError("treated_noise_scale must be positive.")
+        if not 0.0 <= self.unit_effect_share < 1.0:
+            raise ValueError("unit_effect_share must be in [0, 1).")
+        if self.outcome_process == "static" and self.unit_effect_share != 0.0:
+            raise ValueError("unit_effect_share requires outcome_process='panel'.")
+        if self.outcome_process == "panel":
+            if self.r2 + self.unit_effect_share >= 1.0:
+                raise ValueError("Panel worlds require r2 + unit_effect_share < 1.")
+            if self.outcome_distribution == "zero_inflated_count":
+                raise ValueError("Panel worlds do not support zero_inflated_count.")
+            if self.temporal_drift != 0.0:
+                raise ValueError("Panel worlds keep the series stationary; temporal_drift must be 0.")
+            if self.population_size <= self.n_experiment:
+                raise ValueError("Panel worlds need entities outside the cohort for the external panel.")
+        if self.outcome_distribution == "zero_inflated_count" and self.treated_noise_scale != 1.0:
+            raise ValueError("treated_noise_scale is not defined for zero_inflated_count.")
+        if self.noise_in_covariates and max(
+            self.n_irrelevant_features, 24 if self.high_dimensional else 0
+        ) == 0:
+            raise ValueError("noise_in_covariates requires irrelevant noise features.")
 
 
 @dataclass(frozen=True)
@@ -109,6 +145,8 @@ class SyntheticWorld:
     true_sample_ate: float
     true_population_ate: float
     native_truths: Mapping[str, NativeEstimandTruth]
+    estimand_truths: Mapping[str, float] = field(default_factory=dict)
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
 def _world(
@@ -173,6 +211,109 @@ _CATALOG_ITEMS = (
     _world("temporal_b_unsafe", "Ошибочно безопасная зона B", "B является treatment-dependent признаком.", zone_b_mode="treatment_dependent"),
     _world("temporal_c_unsafe", "Опасная зона C", "C является post-outcome proxy.", zone_c_mode="outcome_proxy"),
     _world("many_rare_strata", "Много редких атомарных страт", "Стресс-тест построения и укрупнения страт.", many_rare_strata=True),
+    # --- v3.1: ярус n=500 и честные high-dimensional ковариаты ---------------
+    _world(
+        "gaussian_r2_04_n500",
+        "Gaussian, R2=0.4, n=500",
+        "Промежуточный объём выборки между n=200 и n=2000.",
+        n_experiment=500,
+        population_size=5_000,
+    ),
+    _world(
+        "heteroskedastic_n500",
+        "Гетероскедастичность, n=500",
+        "HC2 против классической SE при умеренном n.",
+        n_experiment=500,
+        population_size=5_000,
+        heteroskedastic=True,
+    ),
+    _world(
+        "high_dimensional_covariates_n500",
+        "24 шумовых ковариаты в анализе, n=500",
+        "noise_* реально входят в covariate_cols: Lin платит 2K+2 параметра.",
+        n_experiment=500,
+        population_size=5_000,
+        n_irrelevant_features=24,
+        high_dimensional=True,
+        noise_in_covariates=True,
+    ),
+    # --- v3.1: единый панельный процесс Y_it = alpha_i + f(X_i) + d_t + eps_it -
+    *(
+        _world(
+            f"gaussian_n{n}_panel",
+            f"Панель, Gaussian, n={n}",
+            "Outcome — следующий период того же ряда; CUPED/CUPAC не ущемлены DGP.",
+            outcome_process="panel",
+            n_experiment=n,
+            population_size=max(5_000, 5 * n),
+            r2=0.2,
+            unit_effect_share=0.4,
+        )
+        for n in (200, 500, 2_000)
+    ),
+    _world(
+        "heterogeneous_effect_panel",
+        "Панель, неоднородный эффект",
+        "Неоднородный эффект при персистентном unit-эффекте.",
+        outcome_process="panel",
+        r2=0.2,
+        unit_effect_share=0.4,
+        heterogeneous_effect=True,
+    ),
+    _world(
+        "population_shift_panel",
+        "Панель, смещение когорты",
+        "SATE и PATE различаются; H0 корректна при centering по estimand.",
+        outcome_process="panel",
+        r2=0.2,
+        unit_effect_share=0.4,
+        cohort_shift=1.25,
+        heterogeneous_effect=True,
+    ),
+    _world(
+        "external_shift_panel",
+        "Панель, сдвиг только внешней панели",
+        "Panel prior смещён, собственный pre-period эксперимента — нет.",
+        outcome_process="panel",
+        r2=0.2,
+        unit_effect_share=0.4,
+        panel_shift=1.0,
+    ),
+    _world(
+        "external_prior_mismatch_panel",
+        "Панель, несовместимый внешний prior",
+        "Prior из внешней панели противоречит эксперименту; его нужно отбросить.",
+        outcome_process="panel",
+        r2=0.2,
+        unit_effect_share=0.4,
+        panel_shift=1.0,
+        prior_mismatch=1.5,
+    ),
+    _world(
+        "nonlinear_panel",
+        "Панель, квадратичный сигнал признаков",
+        "Нелинейный f(X): cross-fitted GBM должен обогнать линейный Lin.",
+        outcome_process="panel",
+        signal_model="quadratic",
+        r2=0.7,
+        unit_effect_share=0.05,
+    ),
+    *(
+        _world(
+            f"freedman_p{int(round(100 * share))}_panel",
+            f"Панель, разбиение {int(round(100 * share))}/{int(round(100 * (1 - share)))}, неоднородный эффект",
+            "Случай Freedman: pooled ANCOVA/CUPED может проиграть DIM, Lin — нет.",
+            outcome_process="panel",
+            treatment_share=share,
+            r2=0.25,
+            unit_effect_share=0.35,
+            heterogeneous_effect=True,
+            effect_modifier_source="prognostic",
+            effect_modifier_scale=-1.2,
+            treated_noise_scale=1.5,
+        )
+        for share in (0.2, 0.3)
+    ),
 )
 
 WORLD_CATALOG: Mapping[str, SyntheticWorldSpec] = MappingProxyType(
@@ -196,6 +337,69 @@ def get_world_spec(world_id: str, **overrides: object) -> SyntheticWorldSpec:
     return replace(spec, **overrides) if overrides else spec
 
 
+BASE_PRE_TREATMENT_COLS = ("pre_target_lag1", "x1", "x2", "x3", "x4")
+BASE_COVARIATE_COLS = ("x1", "x2", "x3", "x4", "region", "device")
+SAMPLE_ESTIMANDS_WITH_COHORT_CENTERING = frozenset({"sample_ate"})
+
+
+def world_noise_cols(spec: SyntheticWorldSpec) -> tuple[str, ...]:
+    """Имена нерелевантных признаков ``noise_*`` мира."""
+
+    count = max(spec.n_irrelevant_features, 24 if spec.high_dimensional else 0)
+    return tuple(f"noise_{index:02d}" for index in range(count))
+
+
+def world_pre_treatment_cols(spec: SyntheticWorldSpec) -> tuple[str, ...]:
+    """Pre-treatment признаки, которые мир объявляет для анализа.
+
+    По умолчанию совпадает с исторической схемой runner. Мир с
+    ``noise_in_covariates=True`` добавляет все ``noise_*`` признаки, чтобы
+    high-dimensional сценарий действительно передавал их в Lin/ML-RATE/CUPAC.
+    """
+
+    if spec.noise_in_covariates:
+        return (*BASE_PRE_TREATMENT_COLS, *world_noise_cols(spec))
+    return BASE_PRE_TREATMENT_COLS
+
+
+def world_covariate_cols(spec: SyntheticWorldSpec) -> tuple[str, ...]:
+    """Ковариаты ``ExperimentSpec.covariate_cols`` для мира."""
+
+    if spec.noise_in_covariates:
+        return (*BASE_COVARIATE_COLS, *world_noise_cols(spec))
+    return BASE_COVARIATE_COLS
+
+
+def has_heterogeneous_effect(spec: SyntheticWorldSpec) -> bool:
+    """Есть ли у ``y1 - y0`` неконстантная часть."""
+
+    return bool(spec.heterogeneous_effect or spec.treated_noise_scale != 1.0)
+
+
+def spec_for_estimand(spec: SyntheticWorldSpec, estimand_id: str) -> SyntheticWorldSpec:
+    """Вернуть спецификацию с центрированием, при котором H0 точно нулевая.
+
+    Для ``sample_ate`` неоднородная часть эффекта центрируется по когорте
+    (``effect=0`` даёт ``SATE == 0`` точно), для ``population_ate`` — по
+    конечной популяции (``PATE == 0`` точно). Остальные estimand и миры без
+    неоднородности возвращаются без изменений. Центрирование меняет только
+    константу в ``y1``, поэтому оба варианта используют одинаковые случайные
+    потоки и одну и ту же когорту.
+    """
+
+    if not has_heterogeneous_effect(spec):
+        return spec
+    if estimand_id in SAMPLE_ESTIMANDS_WITH_COHORT_CENTERING:
+        centering = "cohort"
+    elif estimand_id == "population_ate":
+        centering = "population"
+    else:
+        return spec
+    if spec.effect_modifier_centering == centering:
+        return spec
+    return replace(spec, effect_modifier_centering=centering)
+
+
 def generate_world(
     spec: SyntheticWorldSpec | str,
     *,
@@ -206,6 +410,20 @@ def generate_world(
     ``assignment_data`` содержит только идентификатор, pre-treatment признаки и
     исторические значения. Потенциальные исходы и потенциальные B/C-признаки
     доступны отдельно для вычисления ground truth и последующей симуляции.
+
+    ``spec.outcome_process="static"`` сохраняет исходный v3-процесс: outcome
+    и pre-period панель порождены разными уравнениями. ``"panel"`` порождает
+    единый ряд ``Y_it = alpha_i + f(X_i) + d_t + eps_it``: outcome — период
+    ``T+1`` того же ряда, ``pre_target_lag1/lag2`` — периоды ``T`` и ``T-1``.
+    Тогда ``pre_period_panel`` содержит только внешние сущности (вне когорты),
+    и ``panel_shift``/``prior_mismatch`` искажают только эту внешнюю панель.
+
+    ``spec.effect_modifier_centering`` определяет, какой estimand равен
+    ``spec.effect`` точно: ``"population"`` (по умолчанию) центрирует
+    неоднородную часть эффекта по конечной популяции, поэтому
+    ``true_population_ate == effect``; ``"cohort"`` центрирует её по
+    экспериментальной когорте, поэтому ``true_sample_ate == effect``. Истины
+    обоих estimand для обоих вариантов центрирования записаны в ``metadata``.
     """
 
     if isinstance(spec, str):
@@ -224,17 +442,27 @@ def generate_world(
 
     signal = _prognostic_signal(spec, x1, x2, x3, x4)
     signal = _standardize(signal)
-    noise = _outcome_noise(spec, rng, n, x1)
-    baseline = math.sqrt(spec.r2) * signal + math.sqrt(1.0 - spec.r2) * noise
-    if spec.outcome_distribution == "zero_inflated_count":
-        rate = np.exp(np.clip(0.6 + 0.45 * baseline, -2.0, 3.0))
-        baseline = rng.poisson(rate).astype(float)
-        baseline[rng.random(n) < 0.55] = 0.0
+    panel_series: np.ndarray | None = None
+    if spec.outcome_process == "panel":
+        panel_series, persistent, noise = _panel_outcome_series(spec, rng, n, x1, signal)
+        baseline = panel_series[:, -1]
+        noise_scale = math.sqrt(1.0 - spec.r2 - spec.unit_effect_share)
+        oracle_component = persistent
+        x_component = math.sqrt(spec.r2) * signal
+    else:
+        noise = _outcome_noise(spec, rng, n, x1)
+        baseline = math.sqrt(spec.r2) * signal + math.sqrt(1.0 - spec.r2) * noise
+        noise_scale = math.sqrt(1.0 - spec.r2)
+        oracle_component = math.sqrt(spec.r2) * signal
+        x_component = oracle_component
+        if spec.outcome_distribution == "zero_inflated_count":
+            rate = np.exp(np.clip(0.6 + 0.45 * baseline, -2.0, 3.0))
+            baseline = rng.poisson(rate).astype(float)
+            baseline[rng.random(n) < 0.55] = 0.0
+            oracle_component = None
 
-    effect_modifier = 0.35 * _standardize(x1 + 0.5 * x3)
-    individual_effect = spec.effect + (
-        effect_modifier if spec.heterogeneous_effect else np.zeros(n)
-    )
+    heterogeneity = _effect_heterogeneity(spec, x1, x3, oracle_component, noise, noise_scale, n)
+    individual_effect = spec.effect + heterogeneity
     y0 = baseline
     y1 = baseline + individual_effect
 
@@ -256,11 +484,37 @@ def generate_world(
     _add_strata(population, spec, rng)
     _add_temporal_potentials(population, spec, rng)
 
-    panel = _generate_pre_period_panel(population, spec, rng)
-    cohort_index = _sample_cohort(population, spec, rng)
+    if panel_series is None:
+        panel = _generate_pre_period_panel(population, spec, rng)
+        cohort_index = _sample_cohort(population, spec, rng)
+    else:
+        cohort_index = _sample_cohort(population, spec, rng)
+        panel = _external_panel(population, spec, panel_series, cohort_index)
+
+    in_cohort = np.zeros(n, dtype=bool)
+    in_cohort[cohort_index] = True
+    heterogeneity_cohort_mean = float(np.mean(heterogeneity[cohort_index]))
+    heterogeneity_population_mean = float(np.mean(heterogeneity))
+    if spec.effect_modifier_centering == "cohort":
+        _recenter_effect(population, spec, heterogeneity_cohort_mean)
+
     experiment = population.iloc[cohort_index].reset_index(drop=True)
-    last_two = _latest_panel_features(panel, experiment["entity_id"])
+    if panel_series is None:
+        last_two = _latest_panel_features(panel, experiment["entity_id"])
+    else:
+        last_two = pd.DataFrame(
+            {
+                "entity_id": population["entity_id"].to_numpy()[cohort_index],
+                "pre_target_lag1": panel_series[cohort_index, -2],
+                "pre_target_lag2": panel_series[cohort_index, -3],
+            }
+        )
     experiment = experiment.merge(last_two, on="entity_id", how="left", validate="one_to_one")
+    if spec.noise_in_covariates:
+        for column in world_noise_cols(spec):
+            # Static covariates have identical lag-2 values; temporal CUPAC A
+            # needs the aligned ``__lag2`` copy of every declared feature.
+            experiment[f"{column}__lag2"] = experiment[column]
 
     potential_columns = [
         "entity_id",
@@ -288,6 +542,16 @@ def generate_world(
     native_truths = _native_truths(population, experiment)
     true_sample_ate = float(np.mean(experiment["y1"] - experiment["y0"]))
     true_population_ate = float(np.mean(population["y1"] - population["y0"]))
+    metadata = _world_metadata(
+        spec,
+        population,
+        experiment,
+        oracle_component=oracle_component,
+        x_component=x_component,
+        heterogeneity_cohort_mean=heterogeneity_cohort_mean,
+        heterogeneity_population_mean=heterogeneity_population_mean,
+        external_panel_entities=int(n - in_cohort.sum()) if panel_series is not None else n,
+    )
     return SyntheticWorld(
         spec=spec,
         finite_population=population,
@@ -298,7 +562,186 @@ def generate_world(
         true_sample_ate=true_sample_ate,
         true_population_ate=true_population_ate,
         native_truths=MappingProxyType(native_truths),
+        estimand_truths=MappingProxyType(
+            {"sample_ate": true_sample_ate, "population_ate": true_population_ate}
+        ),
+        metadata=MappingProxyType(metadata),
     )
+
+
+def _effect_heterogeneity(
+    spec: SyntheticWorldSpec,
+    x1: np.ndarray,
+    x3: np.ndarray,
+    oracle_component: np.ndarray | None,
+    noise: np.ndarray,
+    noise_scale: float,
+    n: int,
+) -> np.ndarray:
+    """Non-constant part of ``y1 - y0``, centered over the finite population."""
+
+    heterogeneity = np.zeros(n)
+    if spec.heterogeneous_effect:
+        if spec.effect_modifier_source == "prognostic":
+            if oracle_component is None:
+                raise ValueError("A prognostic effect modifier needs a continuous outcome.")
+            source = oracle_component
+        else:
+            source = x1 + 0.5 * x3
+        heterogeneity = spec.effect_modifier_scale * _standardize(source)
+    if spec.treated_noise_scale != 1.0:
+        # Arm-specific variance: the treated potential outcome carries the
+        # same idiosyncratic shock with a different scale.
+        extra = (spec.treated_noise_scale - 1.0) * noise_scale * np.asarray(noise, dtype=float)
+        heterogeneity = heterogeneity + (extra - float(np.mean(extra)))
+    return heterogeneity
+
+
+def _recenter_effect(
+    population: pd.DataFrame,
+    spec: SyntheticWorldSpec,
+    shift: float,
+) -> None:
+    """Move the effect heterogeneity so that the cohort mean equals ``effect``."""
+
+    population["individual_effect"] = population["individual_effect"].to_numpy() - shift
+    y1 = population["y1"].to_numpy() - shift
+    population["y1"] = y1
+    y0 = population["y0"].to_numpy()
+    population["zone_b1"] = _potential_auxiliary(
+        population["zone_b0"].to_numpy(), y0, y1, spec.zone_b_mode
+    )
+    population["zone_c1"] = _potential_auxiliary(
+        population["zone_c0"].to_numpy(), y0, y1, spec.zone_c_mode
+    )
+    population["post_outcome_proxy1"] = population["post_outcome_proxy1"].to_numpy() - shift
+
+
+def _panel_outcome_series(
+    spec: SyntheticWorldSpec,
+    rng: np.random.Generator,
+    n: int,
+    x1: np.ndarray,
+    signal: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return ``Y`` of shape ``(n, T + 1)``, the persistent part and the last shock.
+
+    Columns ``0..T-1`` are the pre-periods, column ``T`` is the experiment
+    period. ``signal`` is already standardized, ``alpha`` is a persistent unit
+    effect independent of the covariates, ``d_t`` is a common period shock and
+    ``eps_it`` is an independent standardized shock with the spec's tail shape.
+    """
+
+    periods = spec.n_pre_periods + 1
+    alpha = rng.normal(size=n)
+    persistent = math.sqrt(spec.r2) * signal + math.sqrt(spec.unit_effect_share) * alpha
+    shock_scale = math.sqrt(1.0 - spec.r2 - spec.unit_effect_share)
+    period_effect = rng.normal(0.0, 0.2, periods)
+    series = np.empty((n, periods), dtype=float)
+    last_noise = np.zeros(n)
+    for period in range(periods):
+        last_noise = _outcome_noise(spec, rng, n, x1)
+        series[:, period] = persistent + period_effect[period] + shock_scale * last_noise
+    return series, persistent, last_noise
+
+
+def _external_panel(
+    population: pd.DataFrame,
+    spec: SyntheticWorldSpec,
+    series: np.ndarray,
+    cohort_index: np.ndarray,
+) -> pd.DataFrame:
+    """Historical panel of entities outside the experiment cohort.
+
+    Panel shift and prior mismatch are applied only here, so the aggregated
+    panel prior can disagree with the experiment's own pre-period while the
+    experiment's outcome and lags remain one stationary series.
+    """
+
+    outside = np.ones(len(population), dtype=bool)
+    outside[cohort_index] = False
+    rows = np.flatnonzero(outside)
+    periods = spec.n_pre_periods
+    months = pd.date_range("2023-01-01", periods=periods, freq="MS")
+    x1 = population["x1"].to_numpy()[rows]
+    x2 = population["x2"].to_numpy()[rows]
+    distortion = spec.panel_shift * (0.6 * x1 + 0.3) + spec.prior_mismatch * (
+        -1.1 * x1 + 0.9 * x2
+    )
+    values = series[rows, :periods] + distortion[:, None]
+    count = rows.size
+    return pd.DataFrame(
+        {
+            "entity_id": np.tile(population["entity_id"].to_numpy()[rows], periods),
+            "report_date": np.repeat(months.to_numpy(), count),
+            "month_index": np.repeat(np.arange(periods), count).astype(np.int16),
+            "x1": np.tile(x1, periods),
+            "x2": np.tile(x2, periods),
+            "pre_target": values.T.reshape(-1),
+        }
+    )
+
+
+def _r2_of_projection(target: np.ndarray, features: np.ndarray) -> float:
+    target = np.asarray(target, dtype=float)
+    design = np.column_stack([np.ones(target.size), features])
+    valid = np.isfinite(target) & np.isfinite(design).all(axis=1)
+    if int(valid.sum()) <= design.shape[1]:
+        return math.nan
+    coefficients, *_ = np.linalg.lstsq(design[valid], target[valid], rcond=None)
+    residual = target[valid] - design[valid] @ coefficients
+    total = float(np.var(target[valid]))
+    return float(1.0 - np.var(residual) / total) if total > 0.0 else math.nan
+
+
+def _world_metadata(
+    spec: SyntheticWorldSpec,
+    population: pd.DataFrame,
+    experiment: pd.DataFrame,
+    *,
+    oracle_component: np.ndarray | None,
+    x_component: np.ndarray,
+    heterogeneity_cohort_mean: float,
+    heterogeneity_population_mean: float,
+    external_panel_entities: int,
+) -> dict[str, Any]:
+    y0_population = population["y0"].to_numpy()
+    y0_sample = experiment["y0"].to_numpy()
+    pre = experiment["pre_target_lag1"].to_numpy(dtype=float)
+    variance = float(np.var(y0_population))
+    if oracle_component is None or variance <= 0.0:
+        oracle_r2 = math.nan
+        oracle_x_r2 = math.nan
+    else:
+        oracle_r2 = float(np.var(oracle_component) / variance)
+        oracle_x_r2 = float(np.var(x_component) / variance)
+    corr = np.corrcoef(y0_sample, pre)[0, 1] if np.std(pre) > 0.0 else math.nan
+    covariates = experiment[list(world_pre_treatment_cols(spec))].to_numpy(dtype=float)
+    # Truths under both centerings differ only by the constant shift of the
+    # heterogeneous part, so they are exact without regenerating the world.
+    effect = float(spec.effect)
+    population_centered = {
+        "sample_ate": effect + heterogeneity_cohort_mean,
+        "population_ate": effect + heterogeneity_population_mean,
+    }
+    cohort_centered = {
+        "sample_ate": effect + heterogeneity_cohort_mean - heterogeneity_cohort_mean,
+        "population_ate": effect + heterogeneity_population_mean - heterogeneity_cohort_mean,
+    }
+    return {
+        "outcome_process": spec.outcome_process,
+        "effect_modifier_centering": spec.effect_modifier_centering,
+        "oracle_r2": oracle_r2,
+        "oracle_x_r2": oracle_x_r2,
+        "oracle_corr2_y_pre": float(corr**2) if math.isfinite(corr) else math.nan,
+        "linear_r2_pre_treatment_features": _r2_of_projection(y0_sample, covariates),
+        "sample_minus_population_ate": heterogeneity_cohort_mean - heterogeneity_population_mean,
+        "truths_population_centering": MappingProxyType(population_centered),
+        "truths_cohort_centering": MappingProxyType(cohort_centered),
+        "pre_treatment_cols": world_pre_treatment_cols(spec),
+        "covariate_cols": world_covariate_cols(spec),
+        "external_panel_entities": external_panel_entities,
+    }
 
 
 def _prognostic_signal(

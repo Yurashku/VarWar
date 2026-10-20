@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from importlib import metadata as importlib_metadata
 from typing import Any
 
 import numpy as np
@@ -12,6 +13,26 @@ from varwar.stats import t_critical, t_two_sided_p
 
 class HypExBackendUnavailable(RuntimeError):
     pass
+
+
+def hypex_package_version() -> str:
+    """Installed PyPI ``hypex`` version from package metadata.
+
+    Returns ``"not_installed"`` when the optional package is absent, so version
+    strings in registries and diagnostics never drift from the environment.
+    """
+
+    try:
+        return importlib_metadata.version("hypex")
+    except importlib_metadata.PackageNotFoundError:
+        return "not_installed"
+
+
+def hypex_requirement() -> str:
+    """``hypex==<version>`` for the installed package, or ``hypex (not installed)``."""
+
+    version = hypex_package_version()
+    return f"hypex=={version}" if version != "not_installed" else "hypex (not installed)"
 
 
 def estimate_with_hypex_abtest(
@@ -113,6 +134,8 @@ def estimate_with_hypex_abtest(
         ab_test = ABTest(
             additional_tests=additional_tests or ["t-test"],
             multitest_method="holm",
+            # Welch is VarWar's canonical baseline; never rely on HypEx defaults.
+            equal_variance=False,
             cuped_features=cuped_features,
             enable_cupac=bool(cupac_features),
             cupac_models="linear",
@@ -160,6 +183,8 @@ def estimate_with_hypex_abtest(
         ci_high = float(effect + critical * se) if math.isfinite(se) else float("nan")
         diagnostics = {
             "backend": "pypi_hypex",
+            "hypex_version": hypex_package_version(),
+            "hypex_equal_variance": False,
             "standard_error_source": "welch_on_hypex_output_target",
             "degrees_of_freedom": df,
             "hypex_output_target": output_target,

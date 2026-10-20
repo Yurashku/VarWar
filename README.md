@@ -20,7 +20,7 @@ VarWar - исследовательский стенд для сравнения
   panel-prior и HypEx-compatible CUPAC в вариантах A, A+B и A+B+C.
 - Устойчивые дорожки: Yuen trimmed effect, winsorized effect, median-of-means,
   Catoni и чувствительность к Isolation Forest.
-- Интеграционные бейзлайны PyPI `hypex==1.0.6`: AB, CUPED, CUPAC и Matching.
+- Интеграционные бейзлайны PyPI `hypex==1.0.7`: AB, CUPED, CUPAC и Matching.
 - Численная проверка по известной истине: bias, RMSE, empirical SD, SE/SD,
   FPR с интервалом Wilson, super-uniformity p-value, coverage, power, ошибка
   второго рода, MDE, время и RSS-память.
@@ -78,7 +78,30 @@ adapt.<id>__structure.<id>__assign.<id>__target.<id>__analysis.<id>
 Основной пакет находится в `src/varwar/`, пользовательские команды - в
 `examples/`, тесты - в `tests/`, прежние материалы - в `legacy/`.
 
-## Канонические результаты
+## Статус результатов (v3.1)
+
+Ревизия v3 (`docs/review/v3_review_design.md`) нашла ошибки, которые обесценивают
+часть опубликованных цифр. В ветке `rerun/v3.1` исправлено следующее:
+
+- SE для CUPED/CUPAC-пайплайнов считалась по сырой метрике, а не по преобразованной;
+- «H0» миров с гетерогенным эффектом не была нулевой для SATE;
+- пороги вердиктов не учитывали Monte-Carlo-ошибку;
+- seed зависели от состава шардов;
+- финалистов выбирали вручную.
+
+Добавлены миры, где методы реально различаются (панельная метрика, кейс Фридмана,
+нелинейный сигнал, n = 500, high-dim), а также GBM ML-RATE, pooled-θ CUPED/CUPAC и
+PATE-вариант Лина.
+
+- `results/rnd_v3/*` и `results/rnd_v3_all_worlds_core/*` — результаты **до
+  исправлений**. Строки identity + Welch / Lin / ML-RATE в них корректны; строки
+  CUPED/CUPAC и вердикты — нет.
+- Полный пересчёт описан в [`HOME_RUN.md`](HOME_RUN.md); его результаты появятся в `results/rnd_v3_1/`.
+- Отчёт по наиболее перспективному пайплайну (регрессия Лина + HC2):
+  [`outputs/reports/VarWar_Lin_HC2_report_ru.pdf`](outputs/reports/VarWar_Lin_HC2_report_ru.pdf),
+  исходники — `docs/reports/lin_hc2/`.
+
+## Канонические результаты v3 (до исправлений)
 
 - `results/rnd_v3/smoke/` - техническая проверка 28 маршрутов, без рейтинга.
 - `results/rnd_v3/screening/` - 200 реализаций утверждённого ядра на первом

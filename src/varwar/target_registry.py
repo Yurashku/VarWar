@@ -14,13 +14,16 @@ from varwar.advanced_transforms import (
 from varwar.analysis import CausalSafety, InformationMode, TemporalAccess, TheoryGrade
 from varwar.core import ExperimentSpec, require_columns
 from varwar.feature_sets import CupacFeaturePolicy
+from varwar.hypex_backend import hypex_package_version, hypex_requirement
 from varwar.transforms import (
+    CupedTransformer,
     LinearCupacTransformer,
     LinearInTimeAdjustmentTransformer,
     PanelPriorCupacTransformer,
     QuadraticCupacTransformer,
     SequentialTargetTransformer,
     TemporalLinearCupacTransformer,
+    target_variance_ratio,
 )
 
 
@@ -115,6 +118,7 @@ class _HistoricalCupedTransformer:
             "fit_rows": int(valid.sum()),
             "fit_data": "pre_period_lag2_to_lag1",
             "current_outcome_used_for_model_fit": False,
+            **target_variance_ratio(data, spec, target, adjusted),
         }
         return pd.Series(adjusted, index=data.index, name=f"{spec.target_col}_{self.name}")
 
@@ -202,6 +206,14 @@ class _ZonedCupacComposition:
 
     def diagnostics(self) -> Mapping[str, Any]:
         return self._diagnostics
+
+
+def _pooled_cuped_factory() -> CupedTransformer:
+    return CupedTransformer(fit_data="experiment_all", name="cuped_pooled_theta")
+
+
+def _pooled_cupac_factory() -> LinearCupacTransformer:
+    return LinearCupacTransformer(theta_policy="pooled", name="cupac_linear_pooled_theta_A")
 
 
 def _zoned_factory(method_id: str, a_factory: TargetFactory, zones: tuple[str, ...]) -> TargetFactory:
@@ -324,6 +336,44 @@ def build_target_registry() -> Mapping[str, TargetTransformDefinition]:
                 {"theta_fit": "Huber_pre_target_lag2_to_lag1", "trial_outcome_fit": False}
             ),
         ),
+        TargetTransformDefinition(
+            method_id="cuped_pooled_theta",
+            title_ru="CUPED с theta по текущему эксперименту (обе группы)",
+            information_modes=experiment_modes,
+            minimum_temporal_access=TemporalAccess.PRE_TREATMENT_ONLY,
+            causal_safety=CausalSafety.CONDITIONAL,
+            theory_grade=TheoryGrade.B,
+            required_columns=("target", "pre_target"),
+            factory=_pooled_cuped_factory,
+            metadata=MappingProxyType(
+                {
+                    "theta_fit": "Cov(Y, pre_target) / Var(pre_target), experiment_all",
+                    "trial_outcome_fit": True,
+                    "trial_outcome_used_for_theta": True,
+                    "variance_guarantee": "asymptotically never above Var(Y)",
+                }
+            ),
+        ),
+        TargetTransformDefinition(
+            method_id="cupac_linear_pooled_theta_A",
+            title_ru="CUPAC A с theta = Cov(Y, g)/Var(g) по эксперименту",
+            information_modes=experiment_modes,
+            minimum_temporal_access=TemporalAccess.PRE_TREATMENT_ONLY,
+            causal_safety=CausalSafety.CONDITIONAL,
+            theory_grade=TheoryGrade.B,
+            required_columns=("target", "pre_target", "pre_treatment_features", "lag2_pre_features"),
+            factory=_pooled_cupac_factory,
+            metadata=MappingProxyType(
+                {
+                    "family_id": "linear_pooled_theta",
+                    "zones": ("A",),
+                    "model_fit": "lag2_to_lag1_ridge",
+                    "theta_fit": "Cov(Y, g) / Var(g), experiment_all",
+                    "trial_outcome_used_for_theta": True,
+                    "variance_guarantee": "asymptotically never above Var(Y)",
+                }
+            ),
+        ),
     ]
     definitions.extend(
         _cupac_definition(
@@ -387,10 +437,10 @@ def build_target_registry() -> Mapping[str, TargetTransformDefinition]:
             base_safety=CausalSafety.CONDITIONAL,
             available=False,
             unavailable_reason=(
-                "PyPI HypEx 1.0.6 is integrated as a complete analysis method; "
+                f"PyPI HypEx {hypex_package_version()} is integrated as a complete analysis method; "
                 "VarWar has no verified public HypEx target-only API to register here."
             ),
-            metadata={"integration_layer": "AnalysisMethod", "package": "hypex==1.0.6"},
+            metadata={"integration_layer": "AnalysisMethod", "package": hypex_requirement()},
         )
     )
     registry = {definition.method_id: definition for definition in definitions}

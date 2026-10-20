@@ -1,0 +1,3 @@
+check,abs_diff
+lin_minus_closed_form,1.832e-15
+hc2_nocov_minus_welch,2.776e-17

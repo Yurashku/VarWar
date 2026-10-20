@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import unittest
 
+import numpy as np
+
 from varwar.analysis import CausalSafety, InformationMode, TemporalAccess
+from varwar.core import ExperimentSpec
+from varwar.synthetic_v3 import generate_world
 from varwar.target_registry import (
     TARGET_REGISTRY,
     TARGET_REGISTRY_METADATA,
@@ -77,6 +81,62 @@ class TargetRegistryTests(unittest.TestCase):
         reason = TARGET_REGISTRY_METADATA["excluded_from_target_layer"]["cuped_trial_lin"]
         self.assertIn("AnalysisMethod", reason)
         self.assertIn("HC2/HC3", reason)
+
+    def test_pooled_theta_targets_are_registered(self) -> None:
+        cuped = TARGET_REGISTRY["cuped_pooled_theta"]
+        cupac = TARGET_REGISTRY["cupac_linear_pooled_theta_A"]
+        for definition in (cuped, cupac):
+            self.assertTrue(definition.available)
+            self.assertEqual(definition.minimum_temporal_access, TemporalAccess.PRE_TREATMENT_ONLY)
+            self.assertEqual(definition.causal_safety, CausalSafety.CONDITIONAL)
+            self.assertTrue(definition.metadata["trial_outcome_used_for_theta"])
+        self.assertEqual(cuped.create().fit_data, "experiment_all")
+        self.assertEqual(cupac.create().theta_policy, "pooled")
+
+    def test_pooled_theta_never_inflates_variance_where_fixed_coefficient_does(self) -> None:
+        # strong_prior_mismatch: the lag2 -> lag1 relation does not transfer to
+        # the current outcome, so the fixed coefficient of CUPAC A (and the AR
+        # slope of historical CUPED) inflate variance; pooled theta does not.
+        spec = ExperimentSpec(
+            unit_col="entity_id",
+            covariate_cols=("x1", "x2", "x3", "x4"),
+            pre_treatment_cols=("pre_target_lag1", "x1", "x2", "x3", "x4"),
+            pre_target_col="pre_target_lag1",
+        )
+        for seed in (1, 2):
+            world = generate_world("strong_prior_mismatch", seed=seed)
+            frame = world.assignment_data.copy()
+            rng = np.random.default_rng(seed)
+            treatment = np.zeros(len(frame), dtype=int)
+            treatment[rng.choice(len(frame), size=len(frame) // 2, replace=False)] = 1
+            frame["treatment"] = treatment
+            frame["y"] = np.where(
+                treatment == 1, world.experiment_cohort["y1"], world.experiment_cohort["y0"]
+            )
+            frame["pre_target_lag1__lag2"] = frame["pre_target_lag2"]
+            for column in ("x1", "x2", "x3", "x4"):
+                frame[f"{column}__lag2"] = frame[column]
+            ratios = {}
+            for method_id in (
+                "cuped_pooled_theta",
+                "cupac_linear_pooled_theta_A",
+                "cupac_hypex_compatible_A",
+                "cupac_linear_A",
+                "cuped_historical",
+            ):
+                transformer = TARGET_REGISTRY[method_id].create()
+                transformer.fit_transform(frame, spec)
+                diagnostics = dict(transformer.diagnostics())
+                ratios[method_id] = next(
+                    value
+                    for key, value in diagnostics.items()
+                    if str(key).endswith("variance_ratio_within_arm")
+                )
+            self.assertLessEqual(ratios["cuped_pooled_theta"], 1.05)
+            self.assertLessEqual(ratios["cupac_linear_pooled_theta_A"], 1.05)
+            self.assertLessEqual(ratios["cupac_hypex_compatible_A"], 1.05)
+            self.assertGreater(ratios["cupac_linear_A"], 1.5)
+            self.assertGreater(ratios["cuped_historical"], 1.3)
 
     def test_registry_rebuild_keeps_stable_ids(self) -> None:
         rebuilt = build_target_registry()

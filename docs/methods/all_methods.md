@@ -190,20 +190,71 @@ GA обучается на pre-experiment target доступного датас
 | --- | --- |
 | Механизм назначения | `complete_randomization`, `stratified_randomization`, `rerandomization_mahalanobis`, `rerandomization_max_smd`, `rerandomization_mixed_balance`, `hypex_aa_best_of_k` |
 | Структура рандомизации | `none`, `atomic_strata`, `prognostic_blocks`, `genetic_strata_reducer` |
-| CUPED | `cuped_historical`, `cuped_huber_historical` |
+| CUPED | `cuped_historical`, `cuped_huber_historical`, `cuped_pooled_theta` |
 | CUPAC Auto-ML | `cupac_automl_A`, `cupac_automl_A_plus_B`, `cupac_automl_A_plus_B_plus_C` |
-| CUPAC linear | `cupac_linear_A`, `cupac_linear_A_plus_B`, `cupac_linear_A_plus_B_plus_C` |
+| CUPAC linear | `cupac_linear_A`, `cupac_linear_A_plus_B`, `cupac_linear_A_plus_B_plus_C`, `cupac_linear_pooled_theta_A` |
 | CUPAC quadratic | `cupac_quadratic_A`, `cupac_quadratic_A_plus_B`, `cupac_quadratic_A_plus_B_plus_C` |
 | CUPAC panel prior | `panel_prior_cupac_A`, `panel_prior_cupac_A_plus_B`, `panel_prior_cupac_A_plus_B_plus_C` |
 | CUPAC HypEx-compatible | `cupac_hypex_compatible_A`, `cupac_hypex_compatible_A_plus_B`, `cupac_hypex_compatible_A_plus_B_plus_C` |
 | Недоступный target-only HypEx API | `cupac_hypex_official_target_A`, `cupac_hypex_official_target_A_plus_B`, `cupac_hypex_official_target_A_plus_B_plus_C` |
 | Бейзлайн target | `identity` |
 | Разность средних | `diff_means__welch`, `diff_means__student_pooled`, `diff_means__design_based_normal`, `diff_means__welch_studentized_randomization`, `diff_means__bootstrap_t`, `diff_means__sharp_null_randomization` |
-| Регрессионная корректировка | `lin_regression__hc2`, `lin_regression__hc3`, `ml_rate__crossfit_hc2` |
+| Регрессионная корректировка | `lin_regression__hc2`, `lin_regression__hc3`, `ml_rate__crossfit_hc2`, `ml_rate__crossfit_gbm_hc2` |
 | HypEx parity | `hypex_ab__integration`, `hypex_cuped__integration`, `hypex_cupac_A__integration`, `hypex_matching_ate__integration` |
 | Стратификация | `stratified_ate__native`, `common_effect_inverse_variance_stratified__native` |
-| Обобщение на популяцию | `population_weighted_stratified_ate__native`, `calibration_weighted_population_ate__native` |
+| Обобщение на популяцию | `population_weighted_stratified_ate__native`, `calibration_weighted_population_ate__native`, `lin_regression__hc2_pate` |
 | Matching ATE | `nearest_neighbor_matching_ate__reuse_aware`, `optimal_transport_matching_ate__point`, `optimal_transport_matching_ate__sharp_null_ri` |
 | Ёжиковые веса | `hedgehog_weighted_ate__native` |
 | Устойчивые native effects | `yuen_trimmed_effect`, `winsorized_effect_bootstrap`, `trimmed_mean__yuen`, `winsorized_mean__full_refit_bootstrap`, `iforest_trimmed_mean__full_refit`, `iforest_winsorized_mean__full_refit` |
 | Устойчивые кандидаты исходного среднего | `median_of_means_ate`, `catoni_mean_ate`, `median_of_means_ate__bootstrap`, `catoni_mean_ate__bootstrap` |
+
+## Дополнения v3.1
+
+| ID | Категория | Что делает | Сценарий, где метод может провалиться |
+| --- | --- | --- | --- |
+| `cuped_pooled_theta` | TargetTransformer | CUPED с `theta = Cov(Y, X)/Var(X)` по всем строкам текущего эксперимента (обе группы вместе) | `freedman_p20_panel`: при неравном разбиении и эффекте, коррелированном с ковариатой, pooled-наклон хуже DIM |
+| `cupac_linear_pooled_theta_A` | TargetTransformer | CUPAC A (ridge `lag2 -> lag1`), затем `theta = Cov(Y, g)/Var(g)` по эксперименту | тот же Freedman-мир; в `strong_prior_mismatch` должен оставаться не хуже Welch |
+| `ml_rate__crossfit_gbm_hc2` | AnalysisMethod | ML-RATE с cross-fitted `HistGradientBoostingRegressor` без treatment, финальная Lin-регрессия на `g - mean(g)` с HC2, `df = n - 4` | `nonlinear_panel` (обязан обогнать Lin), `gaussian_r2_00_n200` (шум прогноза при малом n) |
+| `lin_regression__hc2_pate` | AnalysisMethod | Lin HC2 для `population_ate`: `Var = HC2 + gamma' Sigma_X gamma / n`, `mu* = X-bar` | `population_shift`, `population_shift_panel`: когорта не iid из популяции, оценка смещена |
+
+Существующие `cupac_linear_A` (коэффициент 1) и `cuped_historical`
+(AR-наклон pre-периода) сохранены без изменений. У них нет гарантии
+эффективности: если связь pre-периода не переносится на текущий outcome,
+`Var(Y*) > Var(Y)`. В `strong_prior_mismatch` отношение дисперсий у CUPAC A
+около 2.2, у historical CUPED около 1.8. Все CUPED/CUPAC-трансформеры теперь
+пишут в диагностику `variance_ratio` и `variance_ratio_within_arm`.
+
+`stratified_randomization` распределяет остатки квот рандомизированным
+систематическим округлением на RNG назначения: `P(T=1 | s)` равна доле
+treatment в каждой страте. Раньше tie-break шёл по порядку меток страт.
+
+### Синтетические миры v3.1
+
+Старые ID миров и их поведение по умолчанию не изменились. Новые поля
+`SyntheticWorldSpec`:
+
+- `effect_modifier_centering` (`"population"` по умолчанию или `"cohort"`)
+  задаёт, какой estimand равен `effect` точно. Для sample-ATE трека
+  runner должен вызывать `spec_for_estimand(spec, "sample_ate")`: тогда при
+  `effect=0` выполняется `|SATE| < 1e-12` и в `population_shift`, и в
+  `heterogeneous_effect`. Истины обоих estimand для обоих вариантов
+  центрирования лежат в `SyntheticWorld.metadata`;
+- `outcome_process="panel"` и `unit_effect_share` включают единый процесс
+  `Y_it = alpha_i + f(X_i) + d_t + eps_it`;
+- `effect_modifier_source`, `effect_modifier_scale` и `treated_noise_scale`
+  задают неоднородность эффекта и арм-специфичную дисперсию;
+- `noise_in_covariates=True` передаёт `noise_*` в
+  `world_pre_treatment_cols(spec)` и `world_covariate_cols(spec)`.
+
+| ID мира | Что проверяет |
+| --- | --- |
+| `gaussian_r2_04_n500`, `heteroskedastic_n500` | ярус n = 500 |
+| `high_dimensional_covariates_n500` | 24 шумовых признака реально входят в анализ, у Lin 60 параметров |
+| `gaussian_n200_panel`, `gaussian_n500_panel`, `gaussian_n2000_panel` | outcome — период `T+1` того же ряда: CUPED/CUPAC не ущемлены DGP |
+| `heterogeneous_effect_panel`, `population_shift_panel` | SATE, PATE и корректная H0 в панельном процессе |
+| `external_shift_panel`, `external_prior_mismatch_panel` | сдвиг и mismatch только во внешней панели без сущностей когорты |
+| `nonlinear_panel` | квадратичный `f(X)`: cross-fitted GBM обгоняет линейный Lin |
+| `freedman_p20_panel`, `freedman_p30_panel` | разбиение 20/80 и 30/70, эффект коррелирован с прогнозом, дисперсия зависит от группы |
+
+В панельных мирах `metadata` содержит `oracle_r2`, `oracle_x_r2`,
+`oracle_corr2_y_pre` и `linear_r2_pre_treatment_features`.

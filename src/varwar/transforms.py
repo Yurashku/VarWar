@@ -49,6 +49,44 @@ def _select_fit_frame(
     )
 
 
+def target_variance_ratio(
+    data: pd.DataFrame,
+    spec: ExperimentSpec,
+    target: np.ndarray,
+    adjusted: np.ndarray,
+) -> dict[str, float]:
+    """Диагностика ``Var(Y*) / Var(Y)`` для скорректированного target.
+
+    ``variance_ratio`` считается по всем конечным строкам. Если в данных есть
+    столбец treatment, ``variance_ratio_within_arm`` использует pooled
+    within-arm дисперсии и не смешивает дисперсию с самим эффектом. Значение
+    больше единицы означает, что коррекция увеличила шум.
+    """
+
+    target = np.asarray(target, dtype=float)
+    adjusted = np.asarray(adjusted, dtype=float)
+    valid = np.isfinite(target) & np.isfinite(adjusted)
+    result = {"variance_ratio": float("nan"), "variance_ratio_within_arm": float("nan")}
+    if int(valid.sum()) < 2:
+        return result
+    raw_variance = float(np.var(target[valid], ddof=1))
+    if raw_variance > 0.0:
+        result["variance_ratio"] = float(np.var(adjusted[valid], ddof=1) / raw_variance)
+    if spec.treatment_col in data.columns:
+        arms = np.asarray(data[spec.treatment_col])
+        numerator = 0.0
+        denominator = 0.0
+        for value in (spec.control_value, spec.treatment_value):
+            mask = valid & (arms == value)
+            if int(mask.sum()) < 2:
+                return result
+            numerator += float(np.var(adjusted[mask], ddof=1)) * (int(mask.sum()) - 1)
+            denominator += float(np.var(target[mask], ddof=1)) * (int(mask.sum()) - 1)
+        if denominator > 0.0:
+            result["variance_ratio_within_arm"] = numerator / denominator
+    return result
+
+
 @dataclass(frozen=True)
 class _RidgeState:
     x_mean: np.ndarray
@@ -216,6 +254,8 @@ class CupedTransformer:
             "fit_data": source,
             "fit_rows": int(valid.sum()),
             "centering_mean": x_mean,
+            "current_outcome_used_for_theta": source != "reference",
+            **target_variance_ratio(data, spec, y, adjusted),
         }
         return pd.Series(adjusted, index=data.index, name=f"{spec.target_col}_{self.name}")
 
@@ -237,6 +277,7 @@ class LinearCupacTransformer:
     ridge_grid: tuple[float, ...] = (0.0, 1e-8, 1e-6, 1e-4, 1e-2, 1e-1, 1.0)
     auto_tune_ridge: bool = True
     name: str = "cupac_linear"
+    theta_policy: str = "fixed"
     _diagnostics: dict[str, Any] = field(default_factory=dict, init=False)
 
     def _resolve_features(self, spec: ExperimentSpec) -> tuple[str, ...]:
@@ -287,8 +328,34 @@ class LinearCupacTransformer:
             pd.to_numeric(data[spec.target_col], errors="coerce"),
             dtype=float,
         )
-        prediction_mean = float(np.nanmean(prediction))
-        adjusted = target - (prediction - prediction_mean)
+        if self.theta_policy not in {"fixed", "pooled"}:
+            raise ValueError("theta_policy must be 'fixed' or 'pooled'.")
+        if self.theta_policy == "pooled":
+            # Standard CUPAC: theta = Cov(Y, g) / Var(g) on all current rows
+            # (both arms pooled). It never inflates variance asymptotically,
+            # unlike the fixed coefficient 1 when the pre-period relation does
+            # not transfer to the current outcome.
+            valid_theta = np.isfinite(target) & np.isfinite(prediction)
+            if int(valid_theta.sum()) < 2:
+                raise ValueError("Pooled-theta CUPAC needs two finite theta-fit rows.")
+            prediction_mean = float(prediction[valid_theta].mean())
+            centered_prediction = prediction[valid_theta] - prediction_mean
+            denominator = float(centered_prediction @ centered_prediction)
+            coefficient = (
+                float(
+                    centered_prediction
+                    @ (target[valid_theta] - float(target[valid_theta].mean()))
+                    / denominator
+                )
+                if denominator > 0.0
+                else 0.0
+            )
+            theta_rows = int(valid_theta.sum())
+        else:
+            prediction_mean = float(np.nanmean(prediction))
+            coefficient = 1.0
+            theta_rows = 0
+        adjusted = target - coefficient * (prediction - prediction_mean)
         self._diagnostics = {
             "features_lag1": ",".join(features),
             "features_lag2": ",".join(lag2_features),
@@ -301,10 +368,15 @@ class LinearCupacTransformer:
             "fit_data": "same_dataset_pre_period_lag2_to_lag1",
             "fit_rows": int(valid.sum()),
             "model_rank": state.rank,
-            "adjustment_coefficient": 1.0,
+            "adjustment_coefficient": coefficient,
+            "theta_policy": self.theta_policy,
+            "theta_fit_data": "experiment_all" if self.theta_policy == "pooled" else "fixed_one",
+            "theta_fit_rows": theta_rows,
             "prediction_variance": float(np.nanvar(prediction, ddof=1)),
             "prediction_center": prediction_mean,
             "current_outcome_used_for_model_fit": False,
+            "current_outcome_used_for_theta": self.theta_policy == "pooled",
+            **target_variance_ratio(data, spec, target, adjusted),
         }
         return pd.Series(adjusted, index=data.index, name=f"{spec.target_col}_{self.name}")
 
@@ -426,6 +498,7 @@ class PanelPriorCupacTransformer:
             "prediction_variance": float(np.nanvar(prediction_values, ddof=1)),
             "finite_predictions": int(finite_prediction.sum()),
             "current_outcome_used_for_model_fit": False,
+            **target_variance_ratio(data, spec, target, adjusted),
         }
         return pd.Series(adjusted, index=data.index, name=f"{spec.target_col}_{self.name}")
 
@@ -569,6 +642,7 @@ class LinearInTimeAdjustmentTransformer:
             "cross_fit_splits": len(folds),
             "cross_fit_total_training_rows": fold_fit_rows,
             "random_state": self.random_state,
+            **target_variance_ratio(data, spec, target, adjusted),
         }
         return pd.Series(adjusted, index=data.index, name=f"{spec.target_col}_{self.name}")
 
@@ -765,6 +839,7 @@ class QuadraticCupacTransformer:
             "prediction_variance": float(np.nanvar(prediction, ddof=1)),
             "prediction_center": prediction_mean,
             "current_outcome_used_for_model_fit": False,
+            **target_variance_ratio(data, spec, target, adjusted),
         }
         return pd.Series(adjusted, index=data.index, name=f"{spec.target_col}_{self.name}")
 
@@ -856,6 +931,7 @@ class TemporalLinearCupacTransformer:
             "prediction_center": prediction_mean,
             "current_outcome_used_for_model_fit": False,
             "current_outcome_used_for_theta": True,
+            **target_variance_ratio(data, spec, target, adjusted),
         }
         return pd.Series(
             adjusted,

@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from varwar.core import ExperimentSpec, require_columns
+from varwar.transforms import target_variance_ratio
 
 
 def _sklearn_components() -> dict[str, Any]:
@@ -253,6 +254,7 @@ class AutoMLTemporalCupacTransformer:
             {
                 "prediction_variance": float(np.nanvar(prediction, ddof=1)),
                 "prediction_center": self._prediction_center,
+                **target_variance_ratio(data, spec, target, adjusted),
             }
         )
         return pd.Series(adjusted, index=data.index, name=f"{spec.target_col}_{self.name}")
@@ -355,6 +357,7 @@ class RobustHistoricalCupedTransformer:
         )
         x = np.asarray(pd.to_numeric(data[covariate], errors="coerce"), dtype=float)
         adjusted = target - self._theta * (x - self._center)
+        self._diagnostics.update(target_variance_ratio(data, spec, target, adjusted))
         return pd.Series(adjusted, index=data.index, name=f"{spec.target_col}_{self.name}")
 
     def fit_transform(

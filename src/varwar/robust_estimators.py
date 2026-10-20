@@ -32,6 +32,26 @@ def _group_arrays(data: pd.DataFrame, spec: ExperimentSpec) -> tuple[np.ndarray,
     return control, treatment
 
 
+BOOTSTRAP_FAILURE_TOLERANCE = 0.05
+
+
+def resampling_failure_diagnostics(n_resamples: int, valid: int) -> dict[str, Any]:
+    """Share of failed resamples and the inference-failure flag.
+
+    Dropping failed replicates silently can bias the SE and interval when the
+    failures concentrate in extreme resamples. More than 5% failures marks the
+    inference as failed; the point estimate is still reported.
+    """
+
+    failed = max(int(n_resamples) - int(valid), 0)
+    share = failed / n_resamples if n_resamples > 0 else 0.0
+    return {
+        "failed_resamples": failed,
+        "failed_resample_share": float(share),
+        "inference_failure": bool(share > BOOTSTRAP_FAILURE_TOLERANCE),
+    }
+
+
 def _validate_resampling(n_resamples: int, confidence_level: float) -> None:
     if n_resamples < 99:
         raise ValueError("n_resamples must be at least 99.")
@@ -103,6 +123,7 @@ def _full_refit_bootstrap(
             "bootstrap_p_value": "centered_two_sided_plus_one",
             "n_resamples": n_resamples,
             "valid_resamples": valid,
+            **resampling_failure_diagnostics(n_resamples, valid),
             "random_state": random_state,
             "confidence_level": confidence_level,
             "conservative_envelope": conservative_envelope,

@@ -33,6 +33,27 @@ class MethodCatalogTests(unittest.TestCase):
         race_ids = {estimator.name for estimator in default_estimators()}
         self.assertEqual(race_ids - ids, set())
 
+    def test_every_catalog_id_is_documented_in_all_methods(self) -> None:
+        document = (ROOT / "docs" / "methods" / "all_methods.md").read_text(encoding="utf-8")
+        missing = [
+            record.method_id
+            for record in method_catalog()
+            if f"`{record.method_id}`" not in document
+        ]
+        self.assertEqual(missing, [])
+
+    def test_v31_methods_are_cataloged(self) -> None:
+        for method_id, category in (
+            ("cuped_pooled_theta", MethodCategory.TARGET_TRANSFORMER),
+            ("cupac_linear_pooled_theta_A", MethodCategory.TARGET_TRANSFORMER),
+            ("ml_rate__crossfit_gbm_hc2", MethodCategory.ANALYSIS_METHOD),
+            ("lin_regression__hc2_pate", MethodCategory.ANALYSIS_METHOD),
+        ):
+            record = get_method_record(method_id)
+            self.assertEqual(record.category, category)
+            self.assertTrue(record.is_implemented)
+        self.assertEqual(get_method_record("lin_regression__hc2_pate").race_scope, "population_ate")
+
     def test_selected_article_candidates_have_correct_roles(self) -> None:
         nonlinear = get_method_record("nonlinear_cupac")
         self.assertEqual(nonlinear.category, MethodCategory.TARGET_TRANSFORMER)

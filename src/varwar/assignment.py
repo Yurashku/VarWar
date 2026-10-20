@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from varwar.core import ExperimentSpec, require_columns
+from varwar.hypex_backend import hypex_package_version
 
 
 @dataclass(frozen=True)
@@ -296,13 +297,85 @@ class CompleteRandomization:
         )
 
 
+def _randomized_stratum_allocation(
+    quotas: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    total: int,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, int]:
+    """Randomized rounding of stratum quotas with an exact total.
+
+    Every stratum receives ``floor(quota)`` or ``floor(quota) + 1`` treated
+    units. The extra units are drawn by systematic sampling over a random
+    stratum order with inclusion probabilities proportional to the fractional
+    parts, so ``E[allocated_s] = quota_s`` whenever the exact total equals the
+    quota sum and no per-arm bound binds. A deterministic largest-remainder
+    tie-break would instead favour strata by label order.
+    """
+
+    base = np.floor(quotas).astype(int)
+    fractions = quotas - base
+    need = int(total - base.sum())
+    allocated = base.copy()
+    if need > 0:
+        probabilities = fractions.astype(float).copy()
+        mass = float(probabilities.sum())
+        if mass <= 0.0:
+            probabilities = np.ones_like(probabilities)
+            mass = float(probabilities.size)
+        probabilities = probabilities * (need / mass)
+        # Proportional scaling can push a probability above one only when
+        # the requested total differs from the quota sum; cap and redistribute.
+        for _ in range(probabilities.size):
+            over = probabilities > 1.0
+            if not over.any():
+                break
+            excess = float((probabilities[over] - 1.0).sum())
+            probabilities[over] = 1.0
+            room = (~over) & (probabilities < 1.0)
+            if not room.any():
+                break
+            probabilities[room] += excess * probabilities[room] / max(
+                float(probabilities[room].sum()), 1e-300
+            )
+        order = rng.permutation(probabilities.size)
+        cumulative = np.cumsum(probabilities[order])
+        cumulative[-1] = float(need)
+        points = rng.uniform() + np.arange(need)
+        chosen = order[np.searchsorted(cumulative, points, side="right")]
+        allocated[chosen] += 1
+    elif need < 0:
+        order = rng.permutation(allocated.size)
+        allocated[order[: -need]] -= 1
+    repairs = 0
+    clipped = np.clip(allocated, lower, upper)
+    repairs += int(np.abs(clipped - allocated).sum())
+    allocated = clipped
+    while int(allocated.sum()) < total:
+        eligible = np.flatnonzero(allocated < upper)
+        keys = quotas[eligible] - allocated[eligible] + 1e-9 * rng.random(eligible.size)
+        allocated[int(eligible[np.argmax(keys)])] += 1
+        repairs += 1
+    while int(allocated.sum()) > total:
+        eligible = np.flatnonzero(allocated > lower)
+        keys = allocated[eligible] - quotas[eligible] + 1e-9 * rng.random(eligible.size)
+        allocated[int(eligible[np.argmax(keys)])] -= 1
+        repairs += 1
+    return allocated, repairs
+
+
 @dataclass
 class StratifiedRandomization:
     """Назначение внутри заранее построенных страт с точным общим размером групп.
 
-    Число treatment-наблюдений по стратам выбирается методом наибольших остатков.
-    Это сохраняет общий плановый размер и максимально близкие к заданной доли
-    размеры внутри каждой страты.
+    Число treatment-наблюдений в страте равно ``floor`` или ``ceil`` от квоты
+    ``n_s * share``; лишние единицы распределяются рандомизированным
+    систематическим округлением на RNG назначения. Поэтому общий размер
+    treatment точный, а ``P(T=1 | s)`` равна share для каждой страты (с
+    точностью до округления общего размера и ограничений ``min_per_arm``).
+    Детерминированный tie-break наибольших остатков смещал бы вероятности
+    в пользу страт с меньшей меткой.
     """
 
     treatment_share: float = 0.5
@@ -344,19 +417,13 @@ class StratifiedRandomization:
                 "The requested treatment share is incompatible with assigning both arms "
                 "inside every stratum."
             )
-        quotas = counts * self.treatment_share
-        allocated = np.clip(np.floor(quotas).astype(int), lower, upper)
-        while int(allocated.sum()) < total_treatment:
-            eligible = np.flatnonzero(allocated < upper)
-            group = int(eligible[np.argmax(quotas[eligible] - allocated[eligible])])
-            allocated[group] += 1
-        while int(allocated.sum()) > total_treatment:
-            eligible = np.flatnonzero(allocated > lower)
-            group = int(eligible[np.argmax(allocated[eligible] - quotas[eligible])])
-            allocated[group] -= 1
-
         assignment_seed = _draw_seed(rng)
         assignment_rng = np.random.default_rng(assignment_seed)
+        quotas = counts * self.treatment_share
+        allocated, rounding_repairs = _randomized_stratum_allocation(
+            quotas, lower, upper, total_treatment, assignment_rng
+        )
+
         binary = np.zeros(len(design_data), dtype=np.int8)
         for group, group_treatment in enumerate(allocated):
             positions = np.flatnonzero(codes == group)
@@ -378,6 +445,8 @@ class StratifiedRandomization:
                 "stratum_col": column,
                 "min_per_arm": self.min_per_arm,
                 "stratum_treatment_sizes": tuple(int(value) for value in allocated),
+                "allocation_rounding": "randomized_systematic",
+                "allocation_bound_repairs": rounding_repairs,
             },
         )
         return AssignmentResult(
@@ -870,7 +939,7 @@ class HypExAABestOfK:
                 None,
             )
 
-        hypex_version = str(getattr(hypex, "__version__", "unknown"))
+        hypex_version = hypex_package_version()
         trace = AssignmentReplayTrace(
             design=self.name,
             seeds={

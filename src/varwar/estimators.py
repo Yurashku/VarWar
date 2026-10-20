@@ -6,13 +6,19 @@ import tempfile
 import threading
 from dataclasses import dataclass, replace
 from importlib import import_module
+from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
 import numpy as np
 import pandas as pd
 
 from varwar.core import EstimateResult, ExperimentSpec, require_columns
-from varwar.hypex_backend import HypExBackendUnavailable, estimate_with_hypex_abtest
+from varwar.hypex_backend import (
+    HypExBackendUnavailable,
+    estimate_with_hypex_abtest,
+    hypex_package_version,
+)
+from varwar.robust_estimators import resampling_failure_diagnostics
 from varwar.stats import (
     normal_critical,
     normal_two_sided_p,
@@ -106,6 +112,26 @@ def _feature_matrix(data: pd.DataFrame, features: tuple[str, ...]) -> np.ndarray
     return np.column_stack([_float_column(data, col) for col in features])
 
 
+def _fold_plan(
+    n_rows: int,
+    n_splits: int,
+    seed: int,
+) -> tuple[list[np.ndarray], list[int]]:
+    """Random folds and one independent seed per fold.
+
+    The permutation is drawn first, so the fold assignment is identical to the
+    historical ML-RATE folds for the same seed.
+    """
+
+    if n_splits < 2:
+        raise ValueError("n_splits must be at least 2.")
+    rng = np.random.default_rng(seed)
+    indices = rng.permutation(n_rows)
+    folds = np.array_split(indices, min(n_splits, n_rows))
+    fold_seeds = [int(value) for value in rng.integers(0, 2**31 - 1, size=len(folds))]
+    return folds, fold_seeds
+
+
 def _cross_fitted_ridge_predictions(
     x: np.ndarray,
     y: np.ndarray,
@@ -115,23 +141,22 @@ def _cross_fitted_ridge_predictions(
     ridge_grid: tuple[float, ...] = (0.0, 1e-8, 1e-6, 1e-4, 1e-2, 1e-1, 1.0),
     auto_tune_ridge: bool = True,
 ) -> tuple[np.ndarray, tuple[float, ...]]:
-    if n_splits < 2:
-        raise ValueError("n_splits must be at least 2.")
-    rng = np.random.default_rng(seed)
-    indices = rng.permutation(x.shape[0])
-    folds = np.array_split(indices, min(n_splits, x.shape[0]))
+    folds, fold_seeds = _fold_plan(x.shape[0], n_splits, seed)
     predictions = np.empty(x.shape[0], dtype=float)
     selected_ridges: list[float] = []
     all_indices = np.arange(x.shape[0])
-    for fold_number, fold in enumerate(folds):
+    for fold, fold_seed in zip(folds, fold_seeds):
         train_mask = np.ones(x.shape[0], dtype=bool)
         train_mask[fold] = False
         train_idx = all_indices[train_mask]
         selected = float(ridge)
         if auto_tune_ridge and train_idx.size >= x.shape[1] + 8:
-            holdout_size = max(2, int(np.ceil(train_idx.size * 0.2)))
-            inner_train = train_idx[:-holdout_size]
-            inner_valid = train_idx[-holdout_size:]
+            # Shuffle before the inner split: the frame may be ordered by
+            # stratum, cohort or time, and a tail holdout would not be random.
+            shuffled = np.random.default_rng(fold_seed).permutation(train_idx)
+            holdout_size = max(2, int(np.ceil(shuffled.size * 0.2)))
+            inner_train = shuffled[:-holdout_size]
+            inner_valid = shuffled[-holdout_size:]
             if inner_train.size > x.shape[1] + 1:
                 candidates = tuple(
                     sorted({float(value) for value in ridge_grid if float(value) >= 0.0})
@@ -153,6 +178,58 @@ def _cross_fitted_ridge_predictions(
             selected,
         )
     return predictions, tuple(selected_ridges)
+
+
+GBM_DEFAULT_PARAMS: Mapping[str, Any] = MappingProxyType(
+    {
+        "max_iter": 100,
+        "learning_rate": 0.08,
+        "max_depth": 3,
+        "max_leaf_nodes": 8,
+        "min_samples_leaf": 20,
+        "l2_regularization": 1.0,
+    }
+)
+
+
+def _cross_fitted_gbm_predictions(
+    x: np.ndarray,
+    y: np.ndarray,
+    n_splits: int,
+    seed: int,
+    params: Mapping[str, Any],
+    categorical_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """Out-of-fold HistGradientBoosting predictions of ``y`` from ``x``.
+
+    The learner never sees the treatment indicator. It is trained on all rows
+    of the other folds with fixed hyperparameters, early stopping disabled and
+    a fold-specific ``random_state``.
+    """
+
+    from sklearn.ensemble import HistGradientBoostingRegressor
+
+    folds, fold_seeds = _fold_plan(x.shape[0], n_splits, seed)
+    predictions = np.empty(x.shape[0], dtype=float)
+    all_indices = np.arange(x.shape[0])
+    categorical = (
+        categorical_mask
+        if categorical_mask is not None and bool(np.any(categorical_mask))
+        else None
+    )
+    for fold, fold_seed in zip(folds, fold_seeds):
+        train_mask = np.ones(x.shape[0], dtype=bool)
+        train_mask[fold] = False
+        train_idx = all_indices[train_mask]
+        model = HistGradientBoostingRegressor(
+            **dict(params),
+            early_stopping=False,
+            categorical_features=categorical,
+            random_state=fold_seed,
+        )
+        model.fit(x[train_idx], y[train_idx])
+        predictions[fold] = model.predict(x[fold])
+    return predictions
 
 
 def _ridge_predict(
@@ -217,6 +294,33 @@ class DifferenceInMeansEstimator:
         )
 
 
+def _bell_mccaffrey_df(
+    design: np.ndarray,
+    inverse: np.ndarray,
+    leverage: np.ndarray,
+    contrast: np.ndarray,
+) -> float:
+    """Bell-McCaffrey degrees of freedom for an HC2 contrast.
+
+    With ``w_i = c'(X'X)^{-1} x_i / sqrt(1 - h_ii)`` and ``M = I - H``, the
+    HC2 variance under homoskedastic errors is a quadratic form whose
+    Satterthwaite df equals ``tr(DM)^2 / tr(DMDM)`` for ``D = diag(w^2)``.
+    The trace identities below avoid forming the ``n x n`` matrix ``M``.
+    """
+
+    weights = (design @ (inverse @ contrast)) ** 2 / np.maximum(1.0 - leverage, 1e-12)
+    trace = float(np.sum(weights * (1.0 - leverage)))
+    projected = inverse @ (design.T @ (weights[:, None] * design))
+    trace_square = float(
+        np.sum(weights**2)
+        - 2.0 * np.sum(weights**2 * leverage)
+        + np.trace(projected @ projected)
+    )
+    if trace_square <= 0.0 or not math.isfinite(trace_square):
+        return math.nan
+    return trace**2 / trace_square
+
+
 @dataclass
 class RegressionAdjustmentEstimator:
     """OLS adjustment for randomized experiments with numeric covariates.
@@ -225,59 +329,110 @@ class RegressionAdjustmentEstimator:
     is the assumption-lean randomized-experiment form: interactions protect
     the treatment coefficient against effect heterogeneity and unequal arm
     sizes while keeping the calculation closed-form.
+
+    Covariates are centered on the analyzed (finite) rows, so ``beta_T`` is
+    the Lin estimate of the SATE of exactly those rows. ``df_method`` selects
+    the t-calibration: ``"residual"`` (``n - p``, default) or
+    ``"bell_mccaffrey"`` (HC2 only). ``pate_correction=True`` keeps the point
+    estimate and adds ``gamma' Sigma_X gamma / n`` to the variance: the
+    uncertainty of ``X-bar`` as an estimate of the target-population mean
+    when the experiment is an iid sample of that population.
     """
 
     name: str = "regression_adjustment"
     include_pre_target: bool = True
     covariance_type: str = "HC2"
+    df_method: str = "residual"
+    pate_correction: bool = False
 
     def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
         features = list(spec.pre_treatment_features())
         if self.include_pre_target and spec.pre_target_col and spec.pre_target_col not in features:
             features.append(spec.pre_target_col)
         require_columns(data, [spec.treatment_col, spec.target_col, *features])
+        if self.covariance_type not in {"HC2", "HC3"}:
+            raise ValueError("covariance_type must be HC2 or HC3.")
+        if self.df_method not in {"residual", "bell_mccaffrey"}:
+            raise ValueError("df_method must be 'residual' or 'bell_mccaffrey'.")
+        if self.df_method == "bell_mccaffrey" and self.covariance_type != "HC2":
+            raise ValueError("Bell-McCaffrey df are defined here for HC2 only.")
 
-        y = _float_column(data, spec.target_col)
-        treatment = (np.asarray(data[spec.treatment_col]) == spec.treatment_value).astype(float)
-        columns = [np.ones(len(data), dtype=float), treatment]
-        centered_covariates = []
-        for col in features:
-            values = _float_column(data, col)
-            centered = values - float(np.nanmean(values))
-            centered_covariates.append(centered)
-            columns.append(centered)
-        columns.extend(treatment * values for values in centered_covariates)
-        x = np.column_stack(columns)
-        valid = np.isfinite(y) & np.isfinite(x).all(axis=1)
-        x = x[valid]
-        y = y[valid]
+        y_all = _float_column(data, spec.target_col)
+        treatment_raw = np.asarray(data[spec.treatment_col])
+        raw = (
+            np.column_stack([_float_column(data, col) for col in features])
+            if features
+            else np.empty((len(data), 0), dtype=float)
+        )
+        valid = np.isfinite(y_all) & np.isfinite(raw).all(axis=1)
+        y = y_all[valid]
+        treatment = (treatment_raw[valid] == spec.treatment_value).astype(float)
+        covariates = raw[valid]
+        means = covariates.mean(axis=0) if covariates.shape[0] else np.zeros(raw.shape[1])
+        centered = covariates - means
+        x = np.column_stack(
+            [np.ones(y.size, dtype=float), treatment, centered, treatment[:, None] * centered]
+        )
         if x.shape[0] <= x.shape[1]:
             raise ValueError("Regression adjustment needs more rows than coefficients.")
 
-        beta, *_ = np.linalg.lstsq(x, y, rcond=None)
+        beta, _, rank, _ = np.linalg.lstsq(x, y, rcond=None)
         residuals = y - x @ beta
         n, p = x.shape
-        if self.covariance_type not in {"HC2", "HC3"}:
-            raise ValueError("covariance_type must be HC2 or HC3.")
         cov = _robust_covariance(x, residuals, self.covariance_type)
         effect = float(beta[1])
-        se = math.sqrt(max(float(cov[1, 1]), 0.0))
-        n_control = int(((np.asarray(data[spec.treatment_col]) == spec.control_value) & valid).sum())
-        n_treatment = int(((np.asarray(data[spec.treatment_col]) == spec.treatment_value) & valid).sum())
+        variance = max(float(cov[1, 1]), 0.0)
+        k = centered.shape[1]
+        diagnostics: dict[str, Any] = {
+            "features": ",".join(features),
+            "se": self.covariance_type,
+            "interactions": True,
+            "covariates_centered": True,
+            "centering_rows": "valid",
+            "n_used": int(n),
+            "n_dropped_nonfinite": int((~valid).sum()),
+            "design_columns": int(p),
+            "design_rank": int(rank),
+            "rank_deficient": bool(rank < p),
+            "df_method": self.df_method,
+        }
+        if self.pate_correction:
+            gamma = beta[2 + k : 2 + 2 * k]
+            if k:
+                sigma = np.atleast_2d(np.cov(covariates, rowvar=False, ddof=1))
+                extra = max(float(gamma @ sigma @ gamma) / n, 0.0)
+            else:
+                extra = 0.0
+            variance += extra
+            diagnostics.update(
+                {
+                    "estimand": "population_ate",
+                    "pate_target_means": "sample_mean",
+                    "pate_variance_term": extra,
+                    "sample_ate_variance": float(cov[1, 1]),
+                }
+            )
+        se = math.sqrt(variance)
+        if self.df_method == "bell_mccaffrey":
+            inverse = np.linalg.pinv(x.T @ x)
+            leverage = np.einsum("ij,jk,ik->i", x, inverse, x)
+            contrast = np.zeros(p)
+            contrast[1] = 1.0
+            df = _bell_mccaffrey_df(x, inverse, leverage, contrast)
+        else:
+            df = float(n - p)
+        diagnostics["degrees_of_freedom"] = df
+        n_control = int(((treatment_raw == spec.control_value) & valid).sum())
+        n_treatment = int(((treatment_raw == spec.treatment_value) & valid).sum())
         return _build_result(
             self.name,
             effect,
             se,
-            float(n - p),
+            df,
             n_control,
             n_treatment,
             spec.alpha,
-            {
-                "features": ",".join(features),
-                "se": self.covariance_type,
-                "interactions": True,
-                "covariates_centered": True,
-            },
+            diagnostics,
         )
 
 
@@ -285,11 +440,16 @@ class RegressionAdjustmentEstimator:
 class MLRateEstimator:
     """Cross-fitted machine-learning regression adjustment.
 
-    The nuisance model is a ridge predictor over numeric covariates. The final
-    stage regresses the target on treatment, out-of-fold prediction, and the
-    treatment-by-prediction interaction with HC2 inference. Ridge strength is
-    selected inside each training fold, so outcome rows in the held-out fold
-    cannot influence their own nuisance prediction.
+    The nuisance model predicts the outcome from pre-treatment covariates
+    without the treatment indicator. ``learner="ridge"`` uses a ridge
+    predictor whose strength is selected inside each training fold on a
+    shuffled inner split; ``learner="hist_gbm"`` uses scikit-learn
+    ``HistGradientBoostingRegressor`` with fixed modest hyperparameters,
+    early stopping off and a fold-seeded ``random_state``. Out-of-fold
+    predictions ``g`` are centered and the final stage regresses the target
+    on treatment, ``g - mean(g)`` and the treatment-by-``g`` interaction with
+    HC2 inference and ``df = n - 4``. Outcome rows of the held-out fold never
+    influence their own nuisance prediction.
     """
 
     name: str = "ml_rate"
@@ -299,12 +459,34 @@ class MLRateEstimator:
     auto_tune_ridge: bool = True
     seed: int = 20260710
     include_interaction: bool = True
+    learner: str = "ridge"
+    gbm_params: Mapping[str, Any] | None = None
+    include_categorical: bool = False
+
+    def _categorical_columns(
+        self,
+        data: pd.DataFrame,
+        spec: ExperimentSpec,
+        numeric: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        if not self.include_categorical:
+            return ()
+        return tuple(
+            column
+            for column in spec.covariate_cols
+            if column not in numeric
+            and column in data.columns
+            and not pd.api.types.is_numeric_dtype(data[column])
+        )
 
     def estimate(self, data: pd.DataFrame, spec: ExperimentSpec) -> EstimateResult:
+        if self.learner not in {"ridge", "hist_gbm"}:
+            raise ValueError("learner must be 'ridge' or 'hist_gbm'.")
         features = tuple(spec.pre_treatment_features())
         require_columns(data, [spec.treatment_col, spec.target_col, *features])
         if not features:
             raise ValueError("MLRateEstimator requires numeric pre-treatment features.")
+        categorical = self._categorical_columns(data, spec, features)
 
         y = _float_column(data, spec.target_col)
         treatment_raw = np.asarray(data[spec.treatment_col])
@@ -323,15 +505,48 @@ class MLRateEstimator:
         x_valid = x[valid]
         if y_valid.size <= max(self.n_splits, x_valid.shape[1] + 2):
             raise ValueError("MLRateEstimator needs more rows for cross-fitting.")
-        predictions, selected_ridges = _cross_fitted_ridge_predictions(
-            x_valid,
-            y_valid,
-            n_splits=self.n_splits,
-            ridge=self.ridge,
-            seed=self.seed,
-            ridge_grid=self.ridge_grid,
-            auto_tune_ridge=self.auto_tune_ridge,
-        )
+        learner_diagnostics: dict[str, Any]
+        if self.learner == "ridge":
+            predictions, selected_ridges = _cross_fitted_ridge_predictions(
+                x_valid,
+                y_valid,
+                n_splits=self.n_splits,
+                ridge=self.ridge,
+                seed=self.seed,
+                ridge_grid=self.ridge_grid,
+                auto_tune_ridge=self.auto_tune_ridge,
+            )
+            learner_diagnostics = {
+                "ridge": self.ridge,
+                "ridge_auto_tuned": self.auto_tune_ridge,
+                "selected_ridges": ",".join(
+                    f"{value:.12g}" for value in selected_ridges
+                ),
+            }
+        else:
+            params = dict(GBM_DEFAULT_PARAMS if self.gbm_params is None else self.gbm_params)
+            codes = [
+                pd.Categorical(data[column]).codes.astype(float)[valid]
+                for column in categorical
+            ]
+            for values in codes:
+                values[values < 0] = np.nan
+            matrix = np.column_stack([x_valid, *codes]) if codes else x_valid
+            mask = np.array(
+                [False] * x_valid.shape[1] + [True] * len(codes), dtype=bool
+            )
+            predictions = _cross_fitted_gbm_predictions(
+                matrix,
+                y_valid,
+                n_splits=self.n_splits,
+                seed=self.seed,
+                params=params,
+                categorical_mask=mask,
+            )
+            learner_diagnostics = {
+                "gbm_params": ",".join(f"{key}={value}" for key, value in sorted(params.items())),
+                "categorical_features": ",".join(categorical),
+            }
         centered_pred = predictions - float(predictions.mean())
         columns = [
             np.ones(y_valid.size, dtype=float),
@@ -341,7 +556,7 @@ class MLRateEstimator:
         if self.include_interaction:
             columns.append(treatment_valid * centered_pred)
         design = np.column_stack(columns)
-        beta, *_ = np.linalg.lstsq(design, y_valid, rcond=None)
+        beta, _, rank, _ = np.linalg.lstsq(design, y_valid, rcond=None)
         residuals = y_valid - design @ beta
         n, p = design.shape
         cov = _robust_covariance(design, residuals, "HC2")
@@ -349,6 +564,11 @@ class MLRateEstimator:
         se = math.sqrt(max(float(cov[1, 1]), 0.0))
         n_control = int((treatment_valid == 0.0).sum())
         n_treatment = int((treatment_valid == 1.0).sum())
+        prediction_corr = (
+            float(np.corrcoef(predictions, y_valid)[0, 1])
+            if np.std(predictions) > 0.0
+            else math.nan
+        )
         return _build_result(
             self.name,
             effect,
@@ -359,14 +579,13 @@ class MLRateEstimator:
             spec.alpha,
             {
                 "features": ",".join(features),
+                "learner": self.learner,
                 "n_splits": self.n_splits,
-                "ridge": self.ridge,
-                "ridge_auto_tuned": self.auto_tune_ridge,
-                "selected_ridges": ",".join(
-                    f"{value:.12g}" for value in selected_ridges
-                ),
+                **learner_diagnostics,
                 "include_interaction": self.include_interaction,
                 "prediction_variance": float(predictions.var(ddof=1)),
+                "prediction_corr2": prediction_corr**2 if math.isfinite(prediction_corr) else math.nan,
+                "design_rank": int(rank),
                 "se": "HC2",
             },
         )
@@ -1195,6 +1414,7 @@ class BootstrapMeanDiffEstimator:
             diagnostics={
                 "n_resamples": self.n_resamples,
                 "valid_resamples": int(pivots.size),
+                **resampling_failure_diagnostics(self.n_resamples, int(pivots.size)),
                 "seed": self.seed,
                 "batch_size": self.batch_size,
                 "ci_method": "studentized_bootstrap_t",
@@ -1939,7 +2159,8 @@ class NearestNeighborMatchingEstimator:
 class HypExMatchingEstimator:
     """Адаптер к matching-эстиматору из PyPI HypEx.
 
-    HypEx 1.0.6 строит matching в обе стороны и возвращает ATT, ATC и ATE.
+    HypEx (версия берётся из ``importlib.metadata``, проверено на 1.0.7)
+    строит matching в обе стороны и возвращает ATT, ATC и ATE.
     Его стандартный профиль использует расстояние Махаланобиса, FAISS,
     matching с возвращением и поправку смещения. VarWar извлекает строку ATE
     из публичного ``Matching`` API без локального воспроизведения алгоритма.
@@ -1987,7 +2208,7 @@ class HypExMatchingEstimator:
         ):
             raise ValueError("Both groups need at least two finite matching rows.")
         try:
-            # HypEx 1.0.6 writes matched_indexes.csv to the process cwd and
+            # HypEx 1.0.x writes matched_indexes.csv to the process cwd and
             # rounds its public UI resume.  Execute the same experiment core
             # in a private cwd and read the raw MatchingAnalyzer table.
             with _HYPEX_MATCHING_CWD_LOCK:
@@ -2033,6 +2254,7 @@ class HypExMatchingEstimator:
             n_treatment=int(np.count_nonzero(treatment == spec.treatment_value)),
             diagnostics={
                 "backend": "pypi_hypex",
+                "hypex_version": hypex_package_version(),
                 "estimand": "ATE",
                 "distance": self.distance,
                 "n_neighbors": self.n_neighbors,

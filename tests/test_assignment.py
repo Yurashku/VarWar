@@ -19,6 +19,7 @@ from varwar.assignment import (
     RerandomizationMixedBalance,
     StratifiedRandomization,
 )
+from varwar.assignment import _randomized_stratum_allocation
 from varwar.core import ExperimentSpec
 
 
@@ -77,6 +78,50 @@ class BasicAssignmentTests(unittest.TestCase):
             self.assertLessEqual(abs(group["treatment"].sum() - expected), 1.0)
             self.assertGreater(group["treatment"].sum(), 0)
             self.assertLess(group["treatment"].sum(), len(group))
+
+    def test_stratified_allocation_probability_equals_share_in_every_stratum(self) -> None:
+        # Equal fractional quotas used to be broken deterministically in label
+        # order (13,13,13,13,12,12,12,12 for every seed).
+        cases = (
+            (np.array([25] * 8), 0.5),
+            (np.array([7, 11, 13, 17, 19, 23]), 0.3),
+        )
+        seeds = 2_000
+        for counts, share in cases:
+            total = int(round(counts.sum() * share))
+            lower = np.ones_like(counts)
+            upper = counts - 1
+            draws = np.empty((seeds, counts.size))
+            for seed in range(seeds):
+                allocated, repairs = _randomized_stratum_allocation(
+                    counts * share, lower, upper, total, np.random.default_rng(seed)
+                )
+                self.assertEqual(int(allocated.sum()), total)
+                self.assertEqual(repairs, 0)
+                self.assertTrue(np.all(np.abs(allocated - counts * share) < 1.0))
+                draws[seed] = allocated
+            probability = draws.mean(axis=0) / counts
+            mc_se = draws.std(axis=0, ddof=1) / np.sqrt(seeds) / counts
+            expected = total / counts.sum()
+            np.testing.assert_array_less(
+                np.abs(probability - expected), 3.0 * np.maximum(mc_se, 1e-12) + 1e-12
+            )
+
+    def test_stratified_assignment_is_unbiased_across_label_ordered_blocks(self) -> None:
+        # Blocks labelled by prognostic score: over-treating low blocks would
+        # bias the difference in means.
+        n_blocks, size = 8, 25
+        score = np.repeat(np.arange(n_blocks, dtype=float), size)
+        data = pd.DataFrame({"stratum": [f"block_{int(v):03d}" for v in score], "score": score})
+        spec = ExperimentSpec(stratum_col="stratum")
+        mechanism = StratifiedRandomization(treatment_share=0.5)
+        differences = []
+        for seed in range(400):
+            labels = mechanism.assign(data, spec, np.random.default_rng(seed)).labels.to_numpy()
+            differences.append(score[labels == 1].mean() - score[labels == 0].mean())
+        differences = np.asarray(differences)
+        z = differences.mean() / (differences.std(ddof=1) / np.sqrt(differences.size))
+        self.assertLess(abs(z), 3.0)
 
     def test_stratified_randomization_rejects_singleton_strata(self) -> None:
         data = _design_data(20)

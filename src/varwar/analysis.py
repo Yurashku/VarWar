@@ -235,6 +235,20 @@ class PointEstimator(Protocol):
     ) -> PointEstimate: ...
 
 
+@dataclass(frozen=True)
+class MaterializedPoint:
+    """Точка вместе с рабочим frame/spec, на которых она реально посчитана.
+
+    Для target-цепочки ``data`` содержит подогнанный преобразованный target,
+    а ``spec.target_col`` указывает на него. Любой non-native вывод обязан
+    считать группы и SE именно здесь, а не на сыром исходе.
+    """
+
+    point: PointEstimate
+    data: pd.DataFrame
+    spec: ExperimentSpec
+
+
 class PointEvaluator(Protocol):
     """Полная процедура получения точки, включая адаптивные преобразования."""
 
@@ -244,6 +258,47 @@ class PointEvaluator(Protocol):
         spec: ExperimentSpec,
         context: RaceContext,
     ) -> PointEstimate: ...
+
+    def materialize(
+        self,
+        data: pd.DataFrame,
+        spec: ExperimentSpec,
+        context: RaceContext,
+    ) -> tuple[pd.DataFrame, ExperimentSpec]: ...
+
+    def evaluate_materialized(
+        self,
+        data: pd.DataFrame,
+        spec: ExperimentSpec,
+        context: RaceContext,
+    ) -> MaterializedPoint: ...
+
+
+def evaluate_materialized(
+    evaluator: PointEvaluator,
+    data: pd.DataFrame,
+    spec: ExperimentSpec,
+    context: RaceContext,
+) -> MaterializedPoint:
+    """Посчитать точку и вернуть frame/spec той же подгонки target-цепочки.
+
+    Если evaluator умеет делать это за один проход, цепочка подгоняется один
+    раз. Evaluator без ``materialize`` отвергается: тихий откат к сырому
+    target воспроизвёл бы ошибку SE на непреобразованном исходе.
+    """
+
+    combined = getattr(evaluator, "evaluate_materialized", None)
+    if callable(combined):
+        return combined(data, spec, context)
+    materialize = getattr(evaluator, "materialize", None)
+    if not callable(materialize):
+        raise TypeError(
+            f"{type(evaluator).__name__} must implement materialize(data, spec, "
+            "context) so that inference uses the transformed target."
+        )
+    point = evaluator.evaluate_point(data, spec, context)
+    frame, working_spec = materialize(data, spec, context)
+    return MaterializedPoint(point, frame, working_spec)
 
 
 @dataclass(frozen=True)
@@ -258,6 +313,23 @@ class DirectPointEvaluator:
     ) -> PointEstimate:
         return self.point_estimator.estimate_point(data, spec, context)
 
+    def materialize(
+        self,
+        data: pd.DataFrame,
+        spec: ExperimentSpec,
+        context: RaceContext,
+    ) -> tuple[pd.DataFrame, ExperimentSpec]:
+        del context
+        return data, spec
+
+    def evaluate_materialized(
+        self,
+        data: pd.DataFrame,
+        spec: ExperimentSpec,
+        context: RaceContext,
+    ) -> MaterializedPoint:
+        return MaterializedPoint(self.evaluate_point(data, spec, context), data, spec)
+
 
 class InferenceProcedure(Protocol):
     inference_id: str
@@ -270,7 +342,12 @@ class InferenceProcedure(Protocol):
         data: pd.DataFrame,
         spec: ExperimentSpec,
         context: RaceContext,
-    ) -> InferenceResult: ...
+        *,
+        materialized: MaterializedPoint | None = None,
+    ) -> InferenceResult:
+        """``data``/``spec`` — исходные; ``materialized`` — та же подгонка,
+        что дала ``observed`` (если не передана, процедура строит её сама)."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -309,13 +386,15 @@ class AnalysisMethod:
             raise ValueError(f"Analysis method is not eligible: {status.value}: {reason}")
         frame = context.analysis_frame(data, spec)
         evaluator = point_evaluator or DirectPointEvaluator(self.point_estimator)
-        observed = evaluator.evaluate_point(frame, spec, context)
+        materialized = evaluate_materialized(evaluator, frame, spec, context)
+        observed = materialized.point
         inference = self.inference.infer(
             evaluator,
             observed,
             frame,
             spec,
             context,
+            materialized=materialized,
         )
         treatment = frame[spec.treatment_col]
         n_control = int((treatment == spec.control_value).sum())
@@ -384,11 +463,14 @@ class NativeEstimatorInference:
         data: pd.DataFrame,
         spec: ExperimentSpec,
         context: RaceContext,
+        *,
+        materialized: MaterializedPoint | None = None,
     ) -> InferenceResult:
-        del evaluator, context
         result = observed.native_payload
         if not isinstance(result, EstimateResult):
-            result = self.estimator.estimate(data, spec)
+            if materialized is None:
+                materialized = evaluate_materialized(evaluator, data, spec, context)
+            result = self.estimator.estimate(materialized.data, materialized.spec)
         return InferenceResult(
             standard_error=result.standard_error,
             statistic=result.statistic,

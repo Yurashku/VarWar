@@ -108,5 +108,85 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(quality["inference_quality"], "warning")
 
 
+    def test_nonnull_h0_flagged(self) -> None:
+        # population_shift-like H0: the effect parameter is 0 but the realised
+        # SATE is 0.285, so "p <= alpha" is power, not size.
+        rng = np.random.default_rng(23)
+        n = 400
+        truth = 0.285 + rng.normal(0.0, 0.005, size=n)
+        effect = truth + rng.normal(size=n) * 0.1
+        se = np.full(n, 0.1)
+        p = 2.0 * __import__("scipy").stats.norm.sf(np.abs(effect / se))
+        h0_frame = pd.DataFrame(
+            {
+                "effect": effect,
+                "standard_error": se,
+                "p_value": p,
+                "ci_low": effect - 1.96 * se,
+                "ci_high": effect + 1.96 * se,
+                "true_sample_ate": truth,
+            }
+        )
+        h1_frame = h0_frame.copy()
+        for column in ("effect", "ci_low", "ci_high", "true_sample_ate"):
+            h1_frame[column] = h1_frame[column] + 0.2
+        h0 = summarize_trial_group(h0_frame, estimand_id="sample_ate")
+        h1 = summarize_trial_group(h1_frame, estimand_id="sample_ate")
+        self.assertFalse(h0["truth_is_null"])
+        self.assertGreater(float(h0["rejection_rate"]), 0.5)  # test against 0 is power
+        quality = evaluate_inference_quality(
+            h0, h1, theory_grade=TheoryGrade.A, causal_safety=CausalSafety.SAFE
+        )
+        self.assertFalse(quality["h0_is_null"])
+        self.assertEqual(quality["size_metric"], "rejection_vs_truth")
+        self.assertLess(float(quality["size"]), 0.08)
+        self.assertEqual(quality["pvalue_state"], "not_applicable")
+        self.assertNotEqual(quality["inference_quality"], "bad")
+
+    def test_exactly_null_h0_uses_rejection_against_zero(self) -> None:
+        h0_frame, h1_frame = _trials(seed=29, fpr=0.05)
+        h0 = summarize_trial_group(h0_frame, estimand_id="sample_ate")
+        h1 = summarize_trial_group(h1_frame, estimand_id="sample_ate")
+        self.assertTrue(h0["truth_is_null"])
+        quality = evaluate_inference_quality(
+            h0, h1, theory_grade=TheoryGrade.A, causal_safety=CausalSafety.SAFE
+        )
+        self.assertTrue(quality["h0_is_null"])
+        self.assertEqual(quality["size_metric"], "rejection_vs_zero")
+        self.assertEqual(float(quality["size"]), float(h0["rejection_rate"]))
+
+    def test_point_bias_without_mc_evidence_is_uncertain_not_bad(self) -> None:
+        h0 = {
+            "truth_is_null": True,
+            "rejection_rate": 0.05,
+            "rejection_ci_low": 0.027,
+            "rejection_ci_high": 0.09,
+            "pvalue_superuniform_p": 0.5,
+        }
+        h1 = {
+            "n_trials": 200,
+            "empirical_sd": 1.0,
+            "bias": 0.13,
+            "bias_mc_se": 1.0 / np.sqrt(200),
+            "coverage": 0.95,
+            "coverage_ci_low": 0.91,
+            "coverage_ci_high": 0.97,
+            "se_to_sd": 1.0,
+            "se_to_sd_ci_low": 0.9,
+            "se_to_sd_ci_high": 1.1,
+        }
+        quality = evaluate_inference_quality(
+            h0, h1, theory_grade=TheoryGrade.A, causal_safety=CausalSafety.SAFE
+        )
+        self.assertEqual(quality["bias_state"], "uncertain")
+        self.assertEqual(quality["inference_quality"], "uncertain")
+        h1["bias"] = 0.30
+        quality = evaluate_inference_quality(
+            h0, h1, theory_grade=TheoryGrade.A, causal_safety=CausalSafety.SAFE
+        )
+        self.assertEqual(quality["inference_quality"], "bad")
+        self.assertIn("bias", quality["verdict_reasons"])
+
+
 if __name__ == "__main__":
     unittest.main()

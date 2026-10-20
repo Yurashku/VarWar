@@ -9,6 +9,7 @@ import pandas as pd
 from varwar.analysis import (
     AnalysisMethod,
     DirectPointEvaluator,
+    MaterializedPoint,
     PipelineStatus,
     PointEstimate,
     PointEstimator,
@@ -30,12 +31,12 @@ class TransformingPointEvaluator:
     pass_panel_prior: bool = False
     _last_diagnostics: dict[str, Any] = field(default_factory=dict, init=False)
 
-    def evaluate_point(
+    def _fit_chain(
         self,
         data: pd.DataFrame,
         spec: ExperimentSpec,
         context: RaceContext,
-    ) -> PointEstimate:
+    ) -> tuple[pd.DataFrame, ExperimentSpec, dict[str, Any]]:
         working = data.copy(deep=False)
         current_spec = spec
         diagnostics: dict[str, Any] = {
@@ -59,14 +60,45 @@ class TransformingPointEvaluator:
                     for key, value in transformer.diagnostics().items()
                 }
             )
+        return working, current_spec, diagnostics
+
+    def materialize(
+        self,
+        data: pd.DataFrame,
+        spec: ExperimentSpec,
+        context: RaceContext,
+    ) -> tuple[pd.DataFrame, ExperimentSpec]:
+        """Рабочий frame с подогнанным target и spec, указывающий на него."""
+
+        working, current_spec, _ = self._fit_chain(data, spec, context)
+        return working, current_spec
+
+    def evaluate_materialized(
+        self,
+        data: pd.DataFrame,
+        spec: ExperimentSpec,
+        context: RaceContext,
+    ) -> MaterializedPoint:
+        """Одна подгонка цепочки: точка и frame/spec, на которых она посчитана."""
+
+        working, current_spec, diagnostics = self._fit_chain(data, spec, context)
         point = self.point_estimator.estimate_point(working, current_spec, context)
         self._last_diagnostics = diagnostics
-        return PointEstimate(
+        estimate = PointEstimate(
             effect=point.effect,
             estimand_id=point.estimand_id,
             diagnostics={**point.diagnostics, **diagnostics},
             native_payload=point.native_payload,
         )
+        return MaterializedPoint(estimate, working, current_spec)
+
+    def evaluate_point(
+        self,
+        data: pd.DataFrame,
+        spec: ExperimentSpec,
+        context: RaceContext,
+    ) -> PointEstimate:
+        return self.evaluate_materialized(data, spec, context).point
 
     def diagnostics(self) -> Mapping[str, Any]:
         return self._last_diagnostics

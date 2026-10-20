@@ -74,6 +74,8 @@ const LABELS = {
   runtime_median_ms: "Медианное время, мс",
   runtime_p95_ms: "Время p95, мс",
   peak_rss_mb: "Пиковая RSS, МБ",
+  peak_memory_mb: "Пик памяти (tracemalloc), МБ",
+  verdict_reasons: "Причины вердикта",
   mde_80: "MDE при мощности 80%",
   variance_reduction_vs_welch: "Снижение дисперсии против Welch",
   status: "Статус",
@@ -322,6 +324,7 @@ function applyMetricFormatting(sheet, headers, firstRow, lastRow) {
     for (const [text, fill, color] of [
       ["good", COLORS.green, COLORS.greenText],
       ["warning", COLORS.amber, COLORS.amberText],
+      ["uncertain", COLORS.amber, COLORS.amberText],
       ["bad", COLORS.red, COLORS.redText],
       ["not_applicable", COLORS.gray, COLORS.grayText],
     ]) {
@@ -353,7 +356,7 @@ function applyMetricFormatting(sheet, headers, firstRow, lastRow) {
     range.conditionalFormats.addCustom(`=AND($${qualityColumn}${firstRow}="good",${metricColumn}${firstRow}<0.5)`, { fill: COLORS.red, font: { color: COLORS.redText } });
   }
 
-  for (const { range } of rangesFor(["h1_rmse", "h1_ate_rmse", "mde_80", "runtime_median_ms", "runtime_p95_ms", "peak_rss_mb"])) {
+  for (const { range } of rangesFor(["h1_rmse", "h1_ate_rmse", "mde_80", "runtime_median_ms", "runtime_p95_ms", "peak_rss_mb", "peak_memory_mb"])) {
     range.conditionalFormats.add("colorScale", {
       criteria: [
         { type: "lowestValue", color: COLORS.green },
@@ -427,6 +430,7 @@ dashboard.getRange("D4:H8").values = [
   ["Порядок выбора", "1", "Фиксируйте estimand", "2", "Пройдите валидностный экран"],
   ["Качество вывода", "good", "Научно и численно прошло", "warning", "Нужна осторожность или больше прогонов"],
   ["Запрет", "bad", "Не ранжировать по мощности", "not_applicable", "Только точечная/диагностическая оценка"],
+  ["Неопределённо", "uncertain", "Смещение не отличимо от порога при данном R", "", "Нужно больше реализаций"],
   ["GT-проверки", "FPR", "H0", "coverage/bias", "H0 и H1 относительно известной истины"],
   ["Сравнение", "RMSE", "Меньше лучше", "power", "Больше лучше только при quality=good"],
 ];
@@ -472,7 +476,7 @@ const leaderInfo = writeDataset(sheets["Лидеры"], datasets.leaders, {
 });
 
 const diagnosticRows = datasets.aggregates.filter((row) =>
-  ["bad", "warning", "not_applicable"].includes(String(row.inference_quality)),
+  ["bad", "uncertain", "warning", "not_applicable"].includes(String(row.inference_quality)),
 );
 const diagnosticInfo = writeDataset(sheets["Диагностика"], diagnosticRows, {
   preferred: [

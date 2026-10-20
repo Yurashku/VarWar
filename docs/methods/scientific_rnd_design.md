@@ -72,9 +72,69 @@ nearest-neighbor matching является негладким функциона
 сравниваются отдельно и имеют повышенный риск утечки, посредничества или смены
 причинной цели.
 
-Метод, которому достаточно pre-period, запускается и в более богатом режиме,
+Метод, которому достаточно pre-period, участвует и в более богатом режиме,
 просто не использует лишнюю информацию. Это позволяет измерить именно выгоду от
 доступа, не исключая базовые процедуры.
+
+### Mode-invariant исполнение
+
+Если ни target, ни метод анализа не читают panel prior и in-time колонки,
+результат во всех четырёх режимах бит-в-бит одинаков. Поэтому
+`run_rnd` (флаг `broadcast_mode_invariant`, по умолчанию включён) исполняет
+такой пайплайн один раз и копирует trial-строку в остальные контексты с
+пометками `mode_invariant=True`, `broadcast=True` и `executed_context`.
+Чувствительность компонентов (`context_sensitivity` ∈ {`none`, `information`,
+`temporal`, `information+temporal`}) берётся из метаданных:
+
+- target: явные ключи `consumes_panel_prior` / `consumes_in_time` в
+  `TargetTransformDefinition.metadata`; иначе выводится из контракта —
+  `requires_aggregate_prior`, требование `panel_prior_summary` или доступность
+  только в `panel_prior` означает чтение prior; минимальный доступ
+  `full_timeline`, требования `*_in_time_features` или зоны B/C означают чтение
+  in-time колонок. Identity target инвариантен; target без объявленных
+  требований считается чувствительным (консервативно);
+- метод анализа: явные атрибуты `consumes_panel_prior` / `consumes_in_time`;
+  иначе метод читает только колонки spec до назначения и инвариантен, если его
+  контракт не требует `full_timeline` и не ограничен режимом `panel_prior`.
+
+Чувствительный к оси пайплайн исполняется отдельно по этой оси. Тест
+`tests/test_rnd_runner.py::test_broadcast_equals_honest_execution` сверяет
+агрегаты транслированного и честного исполнения. Отчёт схлопывает
+одинаковые контексты в одну строку «любой (не зависит от контекста)».
+
+## Seed, шардирование и воспроизводимость
+
+Seed реализации — `SeedSequence([seed, crc32(world_id), trial]).spawn(3)`:
+отдельные потоки для генерации мира, назначения и resampling-анализа. H0 и все
+эффекты одной реализации используют одну и ту же реализацию (CRN). Seed не
+зависит от состава и порядка миров, поэтому стадию можно шардировать по мирам
+и пайплайнам (`examples/run_rnd_v3.py --world ... --pipelines-file ...
+--output-dir ... --resume`). `examples/merge_rnd_shards.py` отказывается
+склеивать шарды при дубле ключа
+`(world_id, trial, pipeline, information_mode, temporal_access,
+ranking_estimand_id, effect_size)`, при расхождении конфигурации (stage, seed,
+R, effects, resamples, …), версии кода (версия пакета, git SHA, хэш
+незакоммиченных правок в `src`) или схемы seed, и записывает полный config в
+`run_metadata.json`. BH-поправка super-uniformity пересчитывается по
+объединённой стадии.
+
+Ковариаты `ExperimentSpec` берутся из объявления мира
+(`world_covariate_cols`, `world_pre_treatment_cols`): старые миры дают прежние
+`x1..x4, region, device` / `pre_target_lag1, x1..x4`, мир с
+`noise_in_covariates=True` добавляет `noise_*`. Для каждого estimand-трека мир
+строится через `spec_for_estimand` (центрирование модификатора эффекта по
+когорте для `sample_ate`, по популяции для `population_ate`) из того же seed,
+поэтому когорта и назначение у треков общие, а H0 точно нулевая.
+
+Список пайплайнов стадии S1 зафиксирован в
+`configs/rnd_v3_1_screening_pipelines.txt`; smoke (`fast_only`) исключает
+resampling, matching, robust-bootstrap, AutoML и `ml_rate__crossfit_gbm_hc2`.
+
+Финалисты confirmation выбираются кодом (`select_confirmation_finalists`), а
+список и правило отбора сохраняются в `run_metadata.json` каждой стадии
+(`finalists`, `finalists_by_track`, `selection_rule`); их можно передать в
+следующую стадию через `--pipelines-file <stage>/run_metadata.json`. Правила
+вердикта и приёмки описаны в [statistical_validation.md](statistical_validation.md).
 
 ## Дорожки по целевой величине
 

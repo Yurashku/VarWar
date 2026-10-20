@@ -9,11 +9,13 @@ from scipy import stats
 
 from varwar.analysis import (
     InferenceResult,
+    MaterializedPoint,
     PointEstimate,
     PointEvaluator,
     RaceContext,
+    evaluate_materialized,
 )
-from varwar.core import ExperimentSpec, require_columns
+from varwar.core import EstimateResult, ExperimentSpec, require_columns
 
 
 def _groups(
@@ -40,6 +42,52 @@ def _welch_parameters(
     denominator = vc * vc / (control.size - 1) + vt * vt / (treated.size - 1)
     df = (vc + vt) ** 2 / denominator if denominator > 0.0 else math.inf
     return se, df
+
+
+def _observed_materialization(
+    evaluator: PointEvaluator,
+    observed: PointEstimate,
+    data: pd.DataFrame,
+    spec: ExperimentSpec,
+    context: RaceContext,
+    materialized: MaterializedPoint | None,
+) -> MaterializedPoint:
+    """Frame/spec наблюдённой точки: преобразованный target, а не сырой исход."""
+
+    if materialized is not None:
+        return materialized
+    materialize = getattr(evaluator, "materialize", None)
+    if not callable(materialize):
+        raise TypeError(
+            f"{type(evaluator).__name__} must implement materialize(data, spec, "
+            "context) so that inference uses the transformed target."
+        )
+    frame, working_spec = materialize(data, spec, context)
+    return MaterializedPoint(observed, frame, working_spec)
+
+
+def _studentization_scale(
+    materialized: MaterializedPoint,
+) -> tuple[float, float, str]:
+    """SE той же процедуры, что дала точку: native SE или Welch по рабочему target."""
+
+    native = materialized.point.native_payload
+    if isinstance(native, EstimateResult):
+        df = native.diagnostics.get("degrees_of_freedom", math.nan)
+        return float(native.standard_error), float(df), "native_standard_error"
+    control, treated = _groups(materialized.data, materialized.spec)
+    se, df = _welch_parameters(control, treated)
+    return se, df, "welch_on_materialized_target"
+
+
+@dataclass(frozen=True)
+class ResamplingDistribution:
+    """Реплики full-refit процедуры: точка, её собственный SE и pivot."""
+
+    effects: np.ndarray
+    standard_errors: np.ndarray
+    statistics: np.ndarray
+    degenerate_replicates: int
 
 
 @dataclass(frozen=True)
@@ -78,9 +126,13 @@ class WelchInference:
         data: pd.DataFrame,
         spec: ExperimentSpec,
         context: RaceContext,
+        *,
+        materialized: MaterializedPoint | None = None,
     ) -> InferenceResult:
-        del evaluator, context
-        control, treated = _groups(data, spec)
+        working = _observed_materialization(
+            evaluator, observed, data, spec, context, materialized
+        )
+        control, treated = _groups(working.data, working.spec)
         se, df = _welch_parameters(control, treated)
         statistic = observed.effect / se if se > 0.0 else math.nan
         critical = float(stats.t.ppf(1.0 - spec.alpha / 2.0, df))
@@ -90,7 +142,11 @@ class WelchInference:
             p_value=float(2.0 * stats.t.sf(abs(statistic), df)),
             ci_low=float(observed.effect - critical * se),
             ci_high=float(observed.effect + critical * se),
-            diagnostics={"degrees_of_freedom": df, "inference_family": "welch"},
+            diagnostics={
+                "degrees_of_freedom": df,
+                "inference_family": "welch",
+                "inference_target_col": working.spec.target_col,
+            },
         )
 
 
@@ -106,9 +162,13 @@ class PooledStudentInference:
         data: pd.DataFrame,
         spec: ExperimentSpec,
         context: RaceContext,
+        *,
+        materialized: MaterializedPoint | None = None,
     ) -> InferenceResult:
-        del evaluator, context
-        control, treated = _groups(data, spec)
+        working = _observed_materialization(
+            evaluator, observed, data, spec, context, materialized
+        )
+        control, treated = _groups(working.data, working.spec)
         df = float(control.size + treated.size - 2)
         pooled = (
             (control.size - 1) * control.var(ddof=1)
@@ -123,7 +183,11 @@ class PooledStudentInference:
             p_value=float(2.0 * stats.t.sf(abs(statistic), df)),
             ci_low=float(observed.effect - critical * se),
             ci_high=float(observed.effect + critical * se),
-            diagnostics={"degrees_of_freedom": df, "inference_family": "pooled_student"},
+            diagnostics={
+                "degrees_of_freedom": df,
+                "inference_family": "pooled_student",
+                "inference_target_col": working.spec.target_col,
+            },
         )
 
 
@@ -141,9 +205,13 @@ class DesignBasedNormalInference:
         data: pd.DataFrame,
         spec: ExperimentSpec,
         context: RaceContext,
+        *,
+        materialized: MaterializedPoint | None = None,
     ) -> InferenceResult:
-        del evaluator, context
-        control, treated = _groups(data, spec)
+        working = _observed_materialization(
+            evaluator, observed, data, spec, context, materialized
+        )
+        control, treated = _groups(working.data, working.spec)
         se, _ = _welch_parameters(control, treated)
         statistic = observed.effect / se if se > 0.0 else math.nan
         critical = float(stats.norm.ppf(1.0 - spec.alpha / 2.0))
@@ -153,16 +221,54 @@ class DesignBasedNormalInference:
             p_value=float(2.0 * stats.norm.sf(abs(statistic))),
             ci_low=float(observed.effect - critical * se),
             ci_high=float(observed.effect + critical * se),
-            diagnostics={"inference_family": "design_based_normal"},
+            diagnostics={
+                "inference_family": "design_based_normal",
+                "inference_target_col": working.spec.target_col,
+            },
         )
 
 
 @dataclass(frozen=True)
 class StudentizedRandomizationInference:
+    """Перестановочный тест по pivot ``effect / SE`` той же full-refit процедуры.
+
+    В каждой перестановке target-цепочка подгоняется заново, а знаменатель —
+    SE именно этой реплики (native SE или Welch по её преобразованному target).
+    """
+
     n_resamples: int = 999
     random_state: int = 42
     inference_id: str = "welch_studentized_randomization"
     capabilities: frozenset[str] = frozenset({"design_aware", "full_refit"})
+
+    def replicate_distribution(
+        self,
+        evaluator: PointEvaluator,
+        data: pd.DataFrame,
+        spec: ExperimentSpec,
+        context: RaceContext,
+    ) -> ResamplingDistribution:
+        if self.n_resamples < 99:
+            raise ValueError("n_resamples must be at least 99.")
+        treatment = np.asarray(data[spec.treatment_col]).copy()
+        rng = np.random.default_rng(self.random_state)
+        effects = np.empty(self.n_resamples, dtype=float)
+        scales = np.empty(self.n_resamples, dtype=float)
+        statistics = np.empty(self.n_resamples, dtype=float)
+        degenerate = 0
+        for index in range(self.n_resamples):
+            labels = treatment[rng.permutation(treatment.size)]
+            permuted = data.assign(**{spec.treatment_col: labels})
+            replicate = evaluate_materialized(evaluator, permuted, spec, context)
+            se, _, _ = _studentization_scale(replicate)
+            effects[index] = replicate.point.effect
+            scales[index] = se
+            if se > 0.0 and math.isfinite(se):
+                statistics[index] = replicate.point.effect / se
+            else:
+                statistics[index] = 0.0
+                degenerate += 1
+        return ResamplingDistribution(effects, scales, statistics, degenerate)
 
     def infer(
         self,
@@ -171,23 +277,18 @@ class StudentizedRandomizationInference:
         data: pd.DataFrame,
         spec: ExperimentSpec,
         context: RaceContext,
+        *,
+        materialized: MaterializedPoint | None = None,
     ) -> InferenceResult:
         if self.n_resamples < 99:
             raise ValueError("n_resamples must be at least 99.")
-        control, treated = _groups(data, spec)
-        observed_se, observed_df = _welch_parameters(control, treated)
+        working = _observed_materialization(
+            evaluator, observed, data, spec, context, materialized
+        )
+        observed_se, observed_df, scale_source = _studentization_scale(working)
         observed_stat = observed.effect / observed_se if observed_se > 0.0 else math.nan
-        treatment = np.asarray(data[spec.treatment_col]).copy()
-        rng = np.random.default_rng(self.random_state)
-        statistics = np.empty(self.n_resamples, dtype=float)
-        for index in range(self.n_resamples):
-            permuted = data.copy(deep=False)
-            labels = treatment[rng.permutation(treatment.size)]
-            permuted = permuted.assign(**{spec.treatment_col: labels})
-            point = evaluator.evaluate_point(permuted, spec, context)
-            c, t = _groups(permuted, spec)
-            se, _ = _welch_parameters(c, t)
-            statistics[index] = point.effect / se if se > 0.0 else 0.0
+        distribution = self.replicate_distribution(evaluator, data, spec, context)
+        statistics = distribution.statistics
         extreme = int(np.count_nonzero(np.abs(statistics) >= abs(observed_stat)))
         p_value = (extreme + 1.0) / (self.n_resamples + 1.0)
         critical = float(np.quantile(np.abs(statistics), 1.0 - spec.alpha, method="higher"))
@@ -203,6 +304,9 @@ class StudentizedRandomizationInference:
                 "randomization_replays_full_point_evaluator": True,
                 "assignment_replay": "fixed_size_label_permutation",
                 "ci_method": "studentized_randomization_pivotal",
+                "studentization": scale_source,
+                "inference_target_col": working.spec.target_col,
+                "degenerate_replicates": distribution.degenerate_replicates,
             },
         )
 
@@ -223,7 +327,11 @@ class SharpNullRandomizationInference:
         data: pd.DataFrame,
         spec: ExperimentSpec,
         context: RaceContext,
+        *,
+        materialized: MaterializedPoint | None = None,
     ) -> InferenceResult:
+        # Sharp-null вывод использует только переподогнанные точки, SE не нужен.
+        del materialized
         if self.n_resamples < 99:
             raise ValueError("n_resamples must be at least 99.")
         treatment = np.asarray(data[spec.treatment_col]).copy()
@@ -262,10 +370,49 @@ class SharpNullRandomizationInference:
 
 @dataclass(frozen=True)
 class BootstrapTInference:
+    """Bootstrap-t: pivot ``(effect* - effect) / SE*`` после полного refit реплики."""
+
     n_resamples: int = 999
     random_state: int = 42
     inference_id: str = "bootstrap_t"
     capabilities: frozenset[str] = frozenset({"full_refit", "superpopulation"})
+
+    def replicate_distribution(
+        self,
+        evaluator: PointEvaluator,
+        observed: PointEstimate,
+        data: pd.DataFrame,
+        spec: ExperimentSpec,
+        context: RaceContext,
+    ) -> ResamplingDistribution:
+        if self.n_resamples < 99:
+            raise ValueError("n_resamples must be at least 99.")
+        treatment = np.asarray(data[spec.treatment_col])
+        control_index = np.flatnonzero(treatment == spec.control_value)
+        treated_index = np.flatnonzero(treatment == spec.treatment_value)
+        rng = np.random.default_rng(self.random_state)
+        effects = np.empty(self.n_resamples, dtype=float)
+        scales = np.empty(self.n_resamples, dtype=float)
+        pivots = np.empty(self.n_resamples, dtype=float)
+        degenerate = 0
+        for index in range(self.n_resamples):
+            sampled = np.concatenate(
+                [
+                    rng.choice(control_index, size=control_index.size, replace=True),
+                    rng.choice(treated_index, size=treated_index.size, replace=True),
+                ]
+            )
+            frame = data.iloc[sampled].reset_index(drop=True)
+            replicate = evaluate_materialized(evaluator, frame, spec, context)
+            se, _, _ = _studentization_scale(replicate)
+            effects[index] = replicate.point.effect
+            scales[index] = se
+            if se > 0.0 and math.isfinite(se):
+                pivots[index] = (replicate.point.effect - observed.effect) / se
+            else:
+                pivots[index] = 0.0
+                degenerate += 1
+        return ResamplingDistribution(effects, scales, pivots, degenerate)
 
     def infer(
         self,
@@ -274,42 +421,34 @@ class BootstrapTInference:
         data: pd.DataFrame,
         spec: ExperimentSpec,
         context: RaceContext,
+        *,
+        materialized: MaterializedPoint | None = None,
     ) -> InferenceResult:
         if self.n_resamples < 99:
             raise ValueError("n_resamples must be at least 99.")
-        treatment = np.asarray(data[spec.treatment_col])
-        control_index = np.flatnonzero(treatment == spec.control_value)
-        treated_index = np.flatnonzero(treatment == spec.treatment_value)
-        control, treated = _groups(data, spec)
-        observed_se, observed_df = _welch_parameters(control, treated)
-        rng = np.random.default_rng(self.random_state)
-        pivots = np.empty(self.n_resamples, dtype=float)
-        for index in range(self.n_resamples):
-            sampled = np.concatenate(
-                [
-                    rng.choice(control_index, size=control_index.size, replace=True),
-                    rng.choice(treated_index, size=treated_index.size, replace=True),
-                ]
-            )
-            replicate = data.iloc[sampled].reset_index(drop=True)
-            point = evaluator.evaluate_point(replicate, spec, context)
-            c, t = _groups(replicate, spec)
-            se, _ = _welch_parameters(c, t)
-            pivots[index] = (point.effect - observed.effect) / se if se > 0.0 else 0.0
+        working = _observed_materialization(
+            evaluator, observed, data, spec, context, materialized
+        )
+        observed_se, observed_df, scale_source = _studentization_scale(working)
+        distribution = self.replicate_distribution(
+            evaluator, observed, data, spec, context
+        )
+        pivots = distribution.statistics
         lower_q, upper_q = np.quantile(
             pivots,
             [spec.alpha / 2.0, 1.0 - spec.alpha / 2.0],
         )
+        observed_stat = observed.effect / observed_se if observed_se > 0.0 else math.nan
         p_value = float(
             2.0
             * min(
-                np.mean(pivots <= -abs(observed.effect / observed_se)),
-                np.mean(pivots >= abs(observed.effect / observed_se)),
+                np.mean(pivots <= -abs(observed_stat)),
+                np.mean(pivots >= abs(observed_stat)),
             )
         )
         return InferenceResult(
             standard_error=observed_se,
-            statistic=observed.effect / observed_se,
+            statistic=observed_stat,
             p_value=min(1.0, p_value),
             ci_low=float(observed.effect - upper_q * observed_se),
             ci_high=float(observed.effect - lower_q * observed_se),
@@ -318,5 +457,8 @@ class BootstrapTInference:
                 "n_resamples": self.n_resamples,
                 "bootstrap_replays_full_point_evaluator": True,
                 "ci_method": "studentized_bootstrap_t",
+                "studentization": scale_source,
+                "inference_target_col": working.spec.target_col,
+                "degenerate_replicates": distribution.degenerate_replicates,
             },
         )

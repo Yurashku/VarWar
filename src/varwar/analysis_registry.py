@@ -224,6 +224,32 @@ def build_analysis_method_registry(
             primary=True,
         ),
         _native_method(
+            "ml_rate__crossfit_gbm_hc2",
+            MLRateEstimator(
+                name="ml_rate_gbm",
+                learner="hist_gbm",
+                seed=random_state,
+            ),
+            estimand_id="sample_ate",
+            track="sample_ate",
+            grade=TheoryGrade.B,
+            safety=CausalSafety.SAFE,
+            primary=True,
+        ),
+        _native_method(
+            "lin_regression__hc2_pate",
+            RegressionAdjustmentEstimator(
+                name="regression_adjustment_pate",
+                covariance_type="HC2",
+                pate_correction=True,
+            ),
+            estimand_id="population_ate",
+            track="population_ate",
+            grade=TheoryGrade.B,
+            safety=CausalSafety.CONDITIONAL,
+            primary=True,
+        ),
+        _native_method(
             "hypex_ab__integration",
             HypExABTestEstimator(
                 prefer_pypi=prefer_pypi_hypex,
