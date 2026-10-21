@@ -1,5 +1,8 @@
 # Claude Notes
 
+> **R&D v3.1 handoff:** before any R&D work read `docs/HANDOFF_home_agent.md`
+> (context, safety rules, full-run plan in `HOME_RUN.md`, acceptance criteria).
+
 This repository is now an estimator R&D harness, not a notebook dump.
 
 Important defaults:

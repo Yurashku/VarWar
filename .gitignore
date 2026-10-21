@@ -96,3 +96,5 @@ results/pipeline_race_v2_smoke_*/
 
 # Промежуточный PDF сборки отчёта (канонический — outputs/reports/)
 docs/reports/**/report.pdf
+results/rnd_v3_1/**/pipeline_matrix.parquet
+results/rnd_v3_1/shards/
