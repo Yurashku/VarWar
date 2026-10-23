@@ -38,10 +38,10 @@ WORLD_RU = {
     "contaminated": "Засорение 3%", "zero_inflated_count": "Счётчик с нулями",
     "heteroskedastic": "Гетероскедастичность", "quadratic_signal": "Квадратичный сигнал",
     "threshold_signal": "Пороговый сигнал", "interactions_high_dimensional": "Взаимодействия + 24 шум. признака",
-    "heterogeneous_effect": "Гетерогенный эффект", "population_shift": "Сдвиг популяции*",
-    "panel_shift": "Сдвиг панели", "temporal_drift": "Временной дрейф",
-    "strong_prior_mismatch": "Несоответствие приора", "temporal_bc_safe": "Зоны B/C безопасны",
-    "temporal_b_unsafe": "Зона B небезопасна", "temporal_c_unsafe": "Зона C небезопасна",
+    "heterogeneous_effect": "Гетерогенный эффект", "population_shift": "Когорта ≠ популяция",
+    "panel_shift": "Сдвиг исторической панели", "temporal_drift": "Дрейф во времени",
+    "strong_prior_mismatch": "Неверная историческая оценка", "temporal_bc_safe": "Признаки во время теста, чистые",
+    "temporal_b_unsafe": "Признак зависит от воздействия", "temporal_c_unsafe": "Признак — прокси исхода",
     "many_rare_strata": "Много редких страт",
 }
 
@@ -49,11 +49,11 @@ WORLD_RU = {
 def fig_allworlds():
     d = pd.read_csv(TAB / "allworlds_screening_lin.csv").sort_values("mse_lin_rel", ascending=False)
     y = np.arange(len(d))
-    fig, ax = plt.subplots(figsize=(6.3, 5.2))
+    fig, ax = plt.subplots(figsize=(6.3, 4.4))
     ax.axvline(1.0, color=INK2, lw=1, ls=(0, (3, 2)), zorder=1)
-    ax.scatter(d.mse_ml_rel, y + 0.18, s=26, color=ORANGE, label="ML-RATE (cross-fit, ridge) + HC2", zorder=3,
+    ax.scatter(d.mse_ml_rel, y + 0.18, s=26, color=ORANGE, label="ML-RATE (линейный прогноз) + HC2", zorder=3,
                edgecolor="white", linewidth=1.2)
-    ax.scatter(d.mse_lin_rel, y - 0.18, s=26, color=BLUE, label="Lin + HC2", zorder=3, edgecolor="white", linewidth=1.2)
+    ax.scatter(d.mse_lin_rel, y - 0.18, s=26, color=BLUE, label="Лин + HC2", zorder=3, edgecolor="white", linewidth=1.2)
     ax.set_yticks(y, [WORLD_RU.get(w, w) for w in d.world_id])
     ax.set_xlabel("MSE / MSE разности средних (меньше — лучше)")
     ax.set_xlim(0, 1.15)
@@ -67,7 +67,7 @@ def fig_allworlds():
 def fig_freedman():
     s = pd.read_csv(TAB / "sim_mc.csv")
     order = ["dim_welch", "cuped_pooled_welch", "ancova_hc2", "lin_hc2"]
-    lab = {"dim_welch": "Разность средних", "cuped_pooled_welch": "CUPED (общий θ)",
+    lab = {"dim_welch": "Разность средних (Уэлч)", "cuped_pooled_welch": "CUPED (общий θ)",
            "ancova_hc2": "ANCOVA (общий наклон)", "lin_hc2": "Лин (взаимодействия)"}
     fig, axes = plt.subplots(1, 2, figsize=(6.3, 2.2), sharey=True)
     for ax, sc, title in zip(axes, ["freedman_p02_b1_0", "freedman_p05_b1_0"], ["p = 0.2", "p = 0.5"]):
@@ -95,7 +95,7 @@ def fig_small_n():
     fig, ax = plt.subplots(figsize=(6.3, 2.4))
     ax.axhspan(0.94, 0.96, color=GRID, alpha=0.6, lw=0)
     ax.axhline(0.95, color=INK2, lw=1, ls=(0, (3, 2)))
-    for m, c, lab, dx in [("dim_welch", INK2, "Welch", -0.03), ("lin_hc2", BLUE, "Лин + HC2", 0.0),
+    for m, c, lab, dx in [("dim_welch", INK2, "Уэлч", -0.03), ("lin_hc2", BLUE, "Лин + HC2", 0.0),
                           ("lin_hc3", AQUA, "Лин + HC3", 0.03)]:
         r = s[s.method == m].sort_values("n")
         x = np.log10(r.n) + dx
@@ -104,7 +104,7 @@ def fig_small_n():
     ax.set_xticks(np.log10([40, 80, 200, 1000]), ["40", "80", "200", "1000"])
     ax.set_xlim(1.5, 3.1)
     ax.set_ylim(0.915, 0.995)
-    ax.set_xlabel("n (сплит 30/70, k = 5 ковариат, гетероскедастичность)")
+    ax.set_xlabel("n (сплит 30/70, K = 5 ковариат, гетероскедастичность)")
     ax.set_ylabel("Покрытие 95% CI")
     ax.legend(loc="lower right", ncol=3)
     fig.tight_layout()
